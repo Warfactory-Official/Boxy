@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.client;
 
+import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.payloads.BatchChunkRequestC2SPayload;
@@ -21,10 +22,17 @@ public class LodRequestManager {
    private static final int BACKPRESSURE_DENOMINATOR = 4;
    private static final int MIN_SEND_PER_TICK = 16;
    private static final long TIMEOUT_NANOS = 10000000000L;
+   /** Prune only after moving this far from the last prune center. The prune distance carries a 32-chunk
+    *  margin over the effective LOD distance (SpiralScanner.getPruneDistance), so deferring by up to 8
+    *  chunks never drops an in-range entry — it just stops re-walking every collection (the timestamp map
+    *  alone can hold hundreds of thousands of entries) on every single chunk-boundary cross. */
+   private static final int PRUNE_HYSTERESIS_CHUNKS = 8;
    private SessionConfigS2CPayload sessionConfig;
    private String serverAddress;
    private int lastChunkX;
    private int lastChunkZ;
+   private int lastPruneChunkX;
+   private int lastPruneChunkZ;
    private ResourceKey<Level> lastDimension;
    private final Long2LongOpenHashMap columnTimestamps = new Long2LongOpenHashMap();
    private final InFlightTracker tracker;
@@ -122,15 +130,25 @@ public class LodRequestManager {
 
                this.lastDimension = currentDim;
                if (playerCx != this.lastChunkX || playerCz != this.lastChunkZ) {
-                  int pruneDistance = this.scanner.getPruneDistance(this.sessionConfig);
-                  this.scanner.pruneOutOfRangeTimestamps(this.columnTimestamps, this.metrics, playerCx, playerCz, pruneDistance);
-                  this.scanner.pruneOutOfRangePositions(this.dirtyColumns, playerCx, playerCz, pruneDistance);
-                  this.scanner.pruneOutOfRangePositions(this.rateLimitRetryPositions, playerCx, playerCz, pruneDistance);
-                  this.scanner.pruneOutOfRangePositions(this.validatedThisSession, playerCx, playerCz, pruneDistance);
-                  this.pruneAndCancelOutOfRangePending(playerCx, playerCz, pruneDistance);
+                  // Re-center the spiral by the distance moved (keeps confirmed progress); prune only after
+                  // accumulating PRUNE_HYSTERESIS_CHUNKS of movement — both used to run in full on every
+                  // chunk-boundary cross, which at large LOD distances re-walked hundreds of thousands of
+                  // entries (several ms on the client thread) per chunk while travelling.
+                  int moved = Math.max(Math.abs(playerCx - this.lastChunkX), Math.abs(playerCz - this.lastChunkZ));
                   this.lastChunkX = playerCx;
                   this.lastChunkZ = playerCz;
-                  this.scanner.resetScanCounter();
+                  this.scanner.recenter(moved);
+                  if (Math.max(Math.abs(playerCx - this.lastPruneChunkX), Math.abs(playerCz - this.lastPruneChunkZ))
+                        >= PRUNE_HYSTERESIS_CHUNKS) {
+                     int pruneDistance = this.scanner.getPruneDistance(this.sessionConfig);
+                     this.scanner.pruneOutOfRangeTimestamps(this.columnTimestamps, this.metrics, playerCx, playerCz, pruneDistance);
+                     this.scanner.pruneOutOfRangePositions(this.dirtyColumns, playerCx, playerCz, pruneDistance);
+                     this.scanner.pruneOutOfRangePositions(this.rateLimitRetryPositions, playerCx, playerCz, pruneDistance);
+                     this.scanner.pruneOutOfRangePositions(this.validatedThisSession, playerCx, playerCz, pruneDistance);
+                     this.pruneAndCancelOutOfRangePending(playerCx, playerCz, pruneDistance);
+                     this.lastPruneChunkX = playerCx;
+                     this.lastPruneChunkZ = playerCz;
+                  }
                }
 
                this.metrics.updateRollingRates();
@@ -197,7 +215,7 @@ public class LodRequestManager {
                         }
                      }
 
-                     this.tracker.timeoutSweep(10000000000L);
+                     this.tracker.timeoutSweep(10000000000L, this::onRequestTimedOut);
                   }
 
                   if (this.queue.hasNext()) {
@@ -298,18 +316,23 @@ public class LodRequestManager {
    }
 
    public void onDirtyColumns(long[] dirtyPositions) {
-      boolean added = false;
+      // Re-open the spiral only down to the innermost dirty column's ring, not all the way to ring 0 —
+      // a full restart made every ~2s dirty broadcast (constant while anyone is building) re-walk the
+      // entire scan area next scan tick.
+      int minRing = Integer.MAX_VALUE;
 
       for (long packed : dirtyPositions) {
          long stored = this.columnTimestamps.get(packed);
          if (stored > 0L) {
             this.dirtyColumns.add(packed);
-            added = true;
+            int ring = PositionUtil.chebyshevDistance(
+                  PositionUtil.unpackX(packed), PositionUtil.unpackZ(packed), this.lastChunkX, this.lastChunkZ);
+            minRing = Math.min(minRing, ring);
          }
       }
 
-      if (added) {
-         this.scanner.resetScanCounter();
+      if (minRing != Integer.MAX_VALUE) {
+         this.scanner.lowerConfirmedRing(minRing);
       }
    }
 
@@ -376,6 +399,13 @@ public class LodRequestManager {
 
    private void pruneAndCancelOutOfRangePending(int playerCx, int playerCz, int pruneDistance) {
       this.tracker.pruneOutOfRange(playerCx, playerCz, pruneDistance, this::sendCancelPacket);
+   }
+
+   /** A timed-out request's column is no longer in flight; re-open the spiral at its ring so it gets
+    *  re-requested even if the player is standing still (the scan keeps confirmed rings closed now). */
+   private void onRequestTimedOut(long pos) {
+      this.scanner.lowerConfirmedRing(PositionUtil.chebyshevDistance(
+            PositionUtil.unpackX(pos), PositionUtil.unpackZ(pos), this.lastChunkX, this.lastChunkZ));
    }
 
    private void cancelAllPending() {

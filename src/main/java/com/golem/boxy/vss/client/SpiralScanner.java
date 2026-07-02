@@ -193,6 +193,29 @@ class SpiralScanner {
       this.scanTickCounter = 0;
    }
 
+   /**
+    * Re-centers the spiral after the player moved {@code movedChebyshev} chunks, keeping the confirmed
+    * progress instead of restarting from ring 0. Every cell within ring {@code confirmedRing - moved} of the
+    * new center was within {@code confirmedRing} of the old center — i.e. already confirmed satisfied — so
+    * only the shifted outer band needs re-walking. Restarting at 0 made every chunk-boundary cross re-walk
+    * the whole scan area (O((2·lodDistance)²) packs + map lookups in a single tick, several ms at large LOD
+    * distances) just to rediscover that the interior was already streamed.
+    */
+   void recenter(int movedChebyshev) {
+      this.confirmedRing = Math.max(0, this.confirmedRing - movedChebyshev);
+      this.scanTickCounter = 0;
+   }
+
+   /**
+    * Drops the confirmed ring just enough to re-scan a specific column (e.g. one the server marked dirty),
+    * instead of restarting the whole spiral from ring 0. The scan re-walks rings {@code >= ring}, which is
+    * exactly where the dirty column sits; everything inside stays confirmed.
+    */
+   void lowerConfirmedRing(int ring) {
+      this.confirmedRing = Math.min(this.confirmedRing, ring);
+      this.scanTickCounter = 0;
+   }
+
    int getEffectiveLodDistance(SessionConfigS2CPayload sessionConfig) {
       int serverDistance = sessionConfig.lodDistanceChunks();
       int clientDistance = VSSClientConfig.CONFIG.lodDistanceChunks;

@@ -33,9 +33,20 @@ public final class TrackedEntityTypes {
 
     private TrackedEntityTypes() {}
 
-    /** One-time diagnostics from the tracking mixin: confirms it applied, the shadow bound, and that it extends. */
+    /**
+     * One-time diagnostics from the tracking mixin: confirms it applied, the shadow bound, and that it extends.
+     *
+     * <p>This sits on {@code ChunkMap$TrackedEntity.updatePlayer} — per tracked entity, per player, per tick —
+     * so after the messages have fired it must cost as close to nothing as possible. A failed
+     * {@code compareAndSet} still executes a hardware CAS, so each is guarded by a plain volatile
+     * {@code get()} first; and since EXTENDED can only fire after FIRED, a single read of EXTENDED
+     * short-circuits the fully-fired steady state.
+     */
     public static void diagRedirect(EntityType<?> type, boolean extend, int distChunks) {
-        if (DIAG_FIRED.compareAndSet(false, true)) {
+        if (DIAG_EXTENDED.get()) {
+            return; // both messages fired — steady state, one volatile read
+        }
+        if (!DIAG_FIRED.get() && DIAG_FIRED.compareAndSet(false, true)) {
             VSSLogger.info("Boxy tracking redirect ACTIVE (mixin applied). first entity="
                     + (type == null ? "<null: shadow did not bind>" : EntityType.getKey(type)) + ", extendThis=" + extend);
         }
@@ -48,26 +59,29 @@ public final class TrackedEntityTypes {
     private static final AtomicBoolean DIAG_CLIENT_FIRED = new AtomicBoolean();
     private static final AtomicBoolean DIAG_CHUNK_BYPASS = new AtomicBoolean();
 
-    /** One-time diagnostic from the client cull mixin: confirms it applied and reaches a configured type. */
+    /** One-time diagnostic from the client cull mixin: confirms it applied and reaches a configured type.
+     *  get()-guarded so the per-entity-per-frame caller pays a volatile read, not a CAS, once fired. */
     public static void diagClientCull(EntityType<?> type) {
-        if (DIAG_CLIENT_FIRED.compareAndSet(false, true)) {
+        if (!DIAG_CLIENT_FIRED.get() && DIAG_CLIENT_FIRED.compareAndSet(false, true)) {
             VSSLogger.info("Boxy client render-cull override ACTIVE for type "
                     + (type == null ? "<null>" : EntityType.getKey(type)));
         }
     }
 
-    /** One-time diagnostic from the chunk-compiled wrap: confirms a distant entity got past the chunk gate. */
+    /** One-time diagnostic from the chunk-compiled wrap: confirms a distant entity got past the chunk gate.
+     *  get()-guarded so the per-entity-per-frame caller pays a volatile read, not a CAS, once fired. */
     public static void diagChunkBypass() {
-        if (DIAG_CHUNK_BYPASS.compareAndSet(false, true)) {
+        if (!DIAG_CHUNK_BYPASS.get() && DIAG_CHUNK_BYPASS.compareAndSet(false, true)) {
             VSSLogger.info("Boxy chunk-compiled gate bypassed — distant entity in an un-compiled chunk is now renderable");
         }
     }
 
     private static final AtomicBoolean DIAG_TICK = new AtomicBoolean();
 
-    /** One-time diagnostic from the distant-entity ticker: confirms moving entities now get interpolated. */
+    /** One-time diagnostic from the distant-entity ticker: confirms moving entities now get interpolated.
+     *  get()-guarded so the per-distant-entity-per-tick caller pays a volatile read, not a CAS, once fired. */
     public static void diagDistantTick(EntityType<?> type) {
-        if (DIAG_TICK.compareAndSet(false, true)) {
+        if (!DIAG_TICK.get() && DIAG_TICK.compareAndSet(false, true)) {
             VSSLogger.info("Boxy ticking distant entities client-side (movement now syncs) — first type "
                     + (type == null ? "<null>" : EntityType.getKey(type)));
         }

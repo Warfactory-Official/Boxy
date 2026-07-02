@@ -23,6 +23,8 @@
     "MixinHttpTexture",
     "MixinVoxyDepthStateRestore",
     "MixinVoxyStencilMaskFix",
+    "MixinVoxyModelBakeryWake",
+    "MixinVoxyMapperBiomeCache",
     "MixinLevelRendererDistantEntities",
     "MixinSimpleTexture"
   ]

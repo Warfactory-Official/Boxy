@@ -8,6 +8,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2LongMap.Entry;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import java.util.function.IntConsumer;
+import java.util.function.LongConsumer;
 
 class InFlightTracker {
    private final Long2LongOpenHashMap pendingRequests = new Long2LongOpenHashMap();
@@ -78,7 +79,10 @@ class InFlightTracker {
       return requestId;
    }
 
-   void timeoutSweep(long thresholdNanos) {
+   /** @param timedOutCallback invoked with each removed position, so the caller can re-open the spiral
+    *  scan at that ring — a timed-out column is no longer in flight and must be re-walked to be re-requested
+    *  (the scan no longer restarts from ring 0 on every chunk move, which used to mask this). */
+   void timeoutSweep(long thresholdNanos, LongConsumer timedOutCallback) {
       long now = System.nanoTime();
       ObjectIterator<Entry> iter = this.pendingRequests.long2LongEntrySet().iterator();
 
@@ -89,6 +93,7 @@ class InFlightTracker {
             this.removeFromSecondaryMaps(pos);
             this.generationPositions.remove(pos);
             iter.remove();
+            timedOutCallback.accept(pos);
          }
       }
    }

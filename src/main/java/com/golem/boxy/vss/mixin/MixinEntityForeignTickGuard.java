@@ -35,6 +35,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class MixinEntityForeignTickGuard {
     @Inject(method = {"m_8119_", "m_6083_"}, at = @At("HEAD"), cancellable = true, require = 0)
     private void boxy$skipForeignDistantTick(CallbackInfo ci) {
+        // All guards below are independent early-returns, so ordering is purely a cost question. This runs
+        // for EVERY entity tick on the client, so the feature gate goes first: when the feature is off
+        // (vanilla server, or local opt-out) it exits on a few plain/volatile field reads, before the
+        // accessor cast and tickingEntities map lookup that the enabled path needs.
+        if (!ClientEntitySync.enabled()) {
+            return;
+        }
         if (DistantEntityTicker.isBoxyTicking()) {
             return; // our own managed tick — allow it
         }
@@ -47,9 +54,6 @@ public abstract class MixinEntityForeignTickGuard {
         }
         if (self == Minecraft.getInstance().player) {
             return; // never block the local player's own tick (it drives the camera)
-        }
-        if (!ClientEntitySync.enabled()) {
-            return;
         }
         if (TrackedEntityTypes.clientContains(self.getType())) {
             ci.cancel(); // foreign re-tick of a Boxy-managed distant entity — skip it
