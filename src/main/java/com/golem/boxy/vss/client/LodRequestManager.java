@@ -3,6 +3,7 @@ package com.golem.boxy.vss.client;
 import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
+import com.golem.boxy.vss.config.VSSClientConfig;
 import com.golem.boxy.vss.payloads.BatchChunkRequestC2SPayload;
 import com.golem.boxy.vss.payloads.CancelRequestC2SPayload;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
@@ -130,14 +131,19 @@ public class LodRequestManager {
 
                this.lastDimension = currentDim;
                if (playerCx != this.lastChunkX || playerCz != this.lastChunkZ) {
-                  // Re-center the spiral by the distance moved (keeps confirmed progress); prune only after
-                  // accumulating PRUNE_HYSTERESIS_CHUNKS of movement — both used to run in full on every
-                  // chunk-boundary cross, which at large LOD distances re-walked hundreds of thousands of
-                  // entries (several ms on the client thread) per chunk while travelling.
+                  // Re-open the spiral for the new center. Incremental mode (opt-in) re-centers by the
+                  // distance moved, keeping confirmed inner rings closed; the default reproduces the original
+                  // full restart from ring 0. Pruning runs only after PRUNE_HYSTERESIS_CHUNKS of movement
+                  // either way (safe under getPruneDistance's 32-chunk margin) — the old per-cross full prune
+                  // re-walked hundreds of thousands of entries on the client thread while travelling.
                   int moved = Math.max(Math.abs(playerCx - this.lastChunkX), Math.abs(playerCz - this.lastChunkZ));
                   this.lastChunkX = playerCx;
                   this.lastChunkZ = playerCz;
-                  this.scanner.recenter(moved);
+                  if (VSSClientConfig.CONFIG.incrementalSpiralRescan) {
+                     this.scanner.recenter(moved);
+                  } else {
+                     this.scanner.resetScanCounter();
+                  }
                   if (Math.max(Math.abs(playerCx - this.lastPruneChunkX), Math.abs(playerCz - this.lastPruneChunkZ))
                         >= PRUNE_HYSTERESIS_CHUNKS) {
                      int pruneDistance = this.scanner.getPruneDistance(this.sessionConfig);
@@ -316,23 +322,32 @@ public class LodRequestManager {
    }
 
    public void onDirtyColumns(long[] dirtyPositions) {
-      // Re-open the spiral only down to the innermost dirty column's ring, not all the way to ring 0 —
-      // a full restart made every ~2s dirty broadcast (constant while anyone is building) re-walk the
-      // entire scan area next scan tick.
+      // Re-open the spiral to cover the dirtied columns. Incremental mode (opt-in) drops the confirmed ring
+      // only to the innermost dirty column's ring; the default reproduces the original full restart from
+      // ring 0 (which made every ~2s dirty broadcast re-walk the entire scan area next scan tick).
+      boolean incremental = VSSClientConfig.CONFIG.incrementalSpiralRescan;
       int minRing = Integer.MAX_VALUE;
 
       for (long packed : dirtyPositions) {
          long stored = this.columnTimestamps.get(packed);
          if (stored > 0L) {
             this.dirtyColumns.add(packed);
-            int ring = PositionUtil.chebyshevDistance(
-                  PositionUtil.unpackX(packed), PositionUtil.unpackZ(packed), this.lastChunkX, this.lastChunkZ);
-            minRing = Math.min(minRing, ring);
+            if (incremental) {
+               int ring = PositionUtil.chebyshevDistance(
+                     PositionUtil.unpackX(packed), PositionUtil.unpackZ(packed), this.lastChunkX, this.lastChunkZ);
+               minRing = Math.min(minRing, ring);
+            } else {
+               minRing = 0; // mark "something was added" so the full reset below fires
+            }
          }
       }
 
       if (minRing != Integer.MAX_VALUE) {
-         this.scanner.lowerConfirmedRing(minRing);
+         if (incremental) {
+            this.scanner.lowerConfirmedRing(minRing);
+         } else {
+            this.scanner.resetScanCounter();
+         }
       }
    }
 
@@ -402,7 +417,10 @@ public class LodRequestManager {
    }
 
    /** A timed-out request's column is no longer in flight; re-open the spiral at its ring so it gets
-    *  re-requested even if the player is standing still (the scan keeps confirmed rings closed now). */
+    *  re-requested even if the player is standing still. Runs in <b>both</b> rescan modes: it's a
+    *  strict safety net (cheaper than a full reset, only fires after a 10s timeout) that also closes a
+    *  latent gap the original had — an in-flight column advances the confirmed ring past itself, so on
+    *  timeout a stationary player would otherwise never re-request it. */
    private void onRequestTimedOut(long pos) {
       this.scanner.lowerConfirmedRing(PositionUtil.chebyshevDistance(
             PositionUtil.unpackX(pos), PositionUtil.unpackZ(pos), this.lastChunkX, this.lastChunkZ));

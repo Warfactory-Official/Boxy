@@ -25,6 +25,18 @@ public final class SectionSerializer {
     /** Shared all-zero reference for the vectorized empty-light check in {@link #hasNonZeroData}. */
     private static final byte[] ZERO_LIGHT = new byte[2048];
 
+    /**
+     * Reusable per-thread serialization scratch. serializeColumn runs on the server main thread for every
+     * column served (loaded-chunk probes — up to hundreds per tick during streaming — and completed
+     * generations); a fresh buffer per column allocated ~24KB and then grow-copied several times for a real
+     * column (100–300KB with light data). The scratch buffer grows once to the high-water mark and is
+     * cleared per column; only the final byte[] snapshot escapes, so reuse is safe. Never release() these.
+     */
+    private static final ThreadLocal<FriendlyByteBuf> SCRATCH_BUF =
+            ThreadLocal.withInitial(() -> new FriendlyByteBuf(Unpooled.buffer(64 * 1024)));
+    private static final ThreadLocal<ArrayList<SectionInfo>> SCRATCH_SECTIONS =
+            ThreadLocal.withInitial(ArrayList::new);
+
     private SectionSerializer() {}
 
     public static LoadedColumnData serializeColumn(ServerLevel level, LevelChunk chunk, int cx, int cz) {
@@ -32,7 +44,8 @@ public final class SectionSerializer {
         LevelChunkSection[] sections = chunk.getSections();
         LevelLightEngine lightEngine = level.getLightEngine();
         LayerLightEventListener blockLightListener = lightEngine.getLayerListener(LightLayer.BLOCK);
-        ArrayList<SectionInfo> includedSections = new ArrayList<>(sections.length);
+        ArrayList<SectionInfo> includedSections = SCRATCH_SECTIONS.get();
+        includedSections.clear();
 
         for (int i = 0; i < sections.length; i++) {
             LevelChunkSection section = sections[i];
@@ -51,34 +64,32 @@ public final class SectionSerializer {
             return new LoadedColumnData(cx, cz, null, 0);
         }
 
-        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer(sections.length * 1024));
-        try {
-            buf.writeVarInt(includedSections.size());
-            LayerLightEventListener skyLightListener = lightEngine.getLayerListener(LightLayer.SKY);
+        FriendlyByteBuf buf = SCRATCH_BUF.get();
+        buf.clear(); // reusable scratch — reset indices, keep capacity; do NOT release
+        buf.writeVarInt(includedSections.size());
+        LayerLightEventListener skyLightListener = lightEngine.getLayerListener(LightLayer.SKY);
 
-            for (SectionInfo info : includedSections) {
-                LevelChunkSection section = sections[info.index];
-                buf.writeByte(info.sectionY);
-                section.write(buf);
-                buf.writeBoolean(info.hasBlockLight);
-                if (info.hasBlockLight) {
-                    buf.writeBytes(info.blLayer.getData());
-                }
-
-                DataLayer slLayer = skyLightListener.getDataLayerData(info.sectionPos);
-                boolean hasSkyLight = slLayer != null && hasNonZeroData(slLayer);
-                buf.writeBoolean(hasSkyLight);
-                if (hasSkyLight) {
-                    buf.writeBytes(slLayer.getData());
-                }
+        for (SectionInfo info : includedSections) {
+            LevelChunkSection section = sections[info.index];
+            buf.writeByte(info.sectionY);
+            section.write(buf);
+            buf.writeBoolean(info.hasBlockLight);
+            if (info.hasBlockLight) {
+                buf.writeBytes(info.blLayer.getData());
             }
 
-            byte[] serialized = new byte[buf.readableBytes()];
-            buf.readBytes(serialized);
-            return new LoadedColumnData(cx, cz, serialized, serialized.length);
-        } finally {
-            buf.release();
+            DataLayer slLayer = skyLightListener.getDataLayerData(info.sectionPos);
+            boolean hasSkyLight = slLayer != null && hasNonZeroData(slLayer);
+            buf.writeBoolean(hasSkyLight);
+            if (hasSkyLight) {
+                buf.writeBytes(slLayer.getData());
+            }
         }
+
+        byte[] serialized = new byte[buf.readableBytes()];
+        buf.readBytes(serialized);
+        includedSections.clear(); // drop DataLayer/SectionPos refs so the scratch list doesn't pin them
+        return new LoadedColumnData(cx, cz, serialized, serialized.length);
     }
 
     private static boolean hasNonZeroData(DataLayer layer) {

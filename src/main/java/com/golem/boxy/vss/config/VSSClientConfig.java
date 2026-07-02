@@ -9,6 +9,13 @@ public class VSSClientConfig extends JsonConfig {
    public boolean receiveServerLods = true;
    public int lodDistanceChunks = 0;
    public boolean offThreadSectionProcessing = true;
+   // Spiral rescan strategy. false (default) = the original behaviour: the outward LOD scan restarts from
+   // ring 0 whenever the player crosses a chunk boundary or a dirty-column broadcast arrives — simple and
+   // proven, but re-walks the whole scan area each time (costly at large LOD distances). true = incremental:
+   // the scan re-centers by the distance moved and dirty broadcasts re-open only the affected ring, keeping
+   // confirmed inner rings closed. Much cheaper on the client thread while travelling, but newer; kept opt-in
+   // so the safe path is the default. Read live — toggling takes effect on the next scan.
+   public boolean incrementalSpiralRescan = false;
    public boolean extendEntityRenderDistance = true;
    public List<String> renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
    public int entityRenderDistanceChunks = 32;

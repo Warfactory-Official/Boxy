@@ -62,6 +62,16 @@ public final class BoxyConfigPage {
                         .setBinding((cfg, v) -> cfg.offThreadSectionProcessing = v, cfg -> cfg.offThreadSectionProcessing)
                         .setImpact(OptionImpact.LOW)
                         .build())
+                .add(OptionImpl.createBuilder(boolean.class, storage)
+                        .setName(Component.literal("Incremental LOD rescan"))
+                        .setTooltip(Component.literal("Experimental: re-center the outward LOD scan by how far you moved instead of restarting it "
+                                + "from scratch each time you cross a chunk or a nearby edit arrives. Much cheaper on the client thread while "
+                                + "travelling at large LOD distances. Off by default (uses the proven full-rescan path); turn on for smoother "
+                                + "frametimes while flying. Applies immediately."))
+                        .setControl(TickBoxControl::new)
+                        .setBinding((cfg, v) -> cfg.incrementalSpiralRescan = v, cfg -> cfg.incrementalSpiralRescan)
+                        .setImpact(OptionImpact.LOW)
+                        .build())
                 .build());
 
         // ---- Distant entities ----
