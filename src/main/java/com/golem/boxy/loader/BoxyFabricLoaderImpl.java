@@ -59,6 +59,13 @@ public class BoxyFabricLoaderImpl implements FabricLoader {
         // not provides aliases, so the reflective probe above misses it. Map the Fabric "iris" id onto
         // Forge's "oculus" explicitly so shaders engage when Oculus is installed.
         if (modId.equals("iris")) return isModLoadedForge("oculus");
+        // Voxy gates its Lithium palette fast-path on isModLoaded("lithium") (WorldConversionFactory.LITHIUM_INSTALLED).
+        // Without it, any chunk section that ends up on Lithium's LithiumHashPalette hits the "Unknown palette type"
+        // throw in setupLocalPalette during ingest — spamming the log every job. On Forge the Lithium port is Radium
+        // (mod id "radium"), which ships the same me.jellysquid.mods.lithium.common.world.chunk.LithiumHashPalette
+        // class Voxy links against and declares provides=["lithium"] — but, exactly like Oculus/iris above, Forge's
+        // ModList.isLoaded checks only real mod ids, not provides aliases, so map "lithium"->"radium" explicitly.
+        if (modId.equals("lithium")) return isModLoadedForge("radium");
         return false;
     }
 
