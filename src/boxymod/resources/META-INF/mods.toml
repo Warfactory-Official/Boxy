@@ -1,0 +1,40 @@
+## mods.toml for Boxy's STANDALONE game-layer mod jar.
+##
+## This file is NOT Boxy's service-layer mods.toml (that one lives in src/main/resources and is largely
+## vestigial). This jar is assembled by the `boxyModJar` task, reobfuscated official->SRG, staged as
+## `boxy/boxy-mod.libzip` inside Boxy's main jar, and returned to Forge by BoxyModLocator as its own
+## ModFile. It is a real, self-contained Forge mod that depends on and hooks into Voxy.
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "boxy"
+version = "1.0.0"
+displayName = "Boxy"
+authors = "golem"
+# Boxy/Voxy are client renderers + an optional server feature; never trip Forge's server-version handshake.
+displayTest = "IGNORE_ALL_VERSION"
+description = '''Loads the Voxy LoD rendering mod on Forge 1.20.1 (by remapping its Fabric bytecode to SRG) and adds server-side LOD streaming + chunk dispatch (a port of Voxy Server Side).'''
+
+[[dependencies.boxy]]
+modId = "forge"
+mandatory = true
+versionRange = "[47,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.boxy]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1,1.21)"
+ordering = "NONE"
+side = "BOTH"
+
+# Boxy's game-layer code calls into Voxy directly, so Voxy must be present and loaded first.
+[[dependencies.boxy]]
+modId = "voxy"
+mandatory = true
+versionRange = "[0,)"
+ordering = "AFTER"
+side = "BOTH"
