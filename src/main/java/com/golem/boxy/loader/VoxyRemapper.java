@@ -74,7 +74,11 @@ public final class VoxyRemapper {
     //      constructor INVOKE inject, so it now applies — restoring Fabric parity (render-thread priority).
     // v37: strip Voxy's flashback.MixinFlashbackRecorder (targets Flashback's removed <init>(RegistryAccess);
     //      0.11.0's Recorder is no-arg). Boxy ships MixinBoxyFlashbackRecorder against the no-arg ctor instead.
-    private static final String REMAP_VERSION = "v37";
+    // v38: patch getLightmapUv in assets/voxy/shaders/lod/lighting.glsl (backport of upstream 0.2.17-beta):
+    //      the 0.2.14 formula maps lightmap indices 0-15 straight to 0..1 without the 15/16 texel-grid
+    //      scale, so high light levels sample off texel centers; upstream rescales to texel centers
+    //      (base*(15/16) + 0.5/16). Pure asset rewrite in assemble() — see patchLightingGlsl().
+    private static final String REMAP_VERSION = "v38";
 
     /**
      * Voxy mixins that cannot apply on Forge 1.20.1 + Embeddium and must be removed from the configs:
@@ -266,6 +270,15 @@ public final class VoxyRemapper {
                         writeEntry(out, name, rewriteMixinConfig(name, new String(data, StandardCharsets.UTF_8)));
                         continue;
                     }
+                    // Backported shader fix (upstream 0.2.17-beta): correct lightmap UV texel centers.
+                    if (name.equals(LIGHTING_GLSL)) {
+                        byte[] data;
+                        try (InputStream is = in.getInputStream(e)) {
+                            data = is.readAllBytes();
+                        }
+                        writeEntry(out, name, patchLightingGlsl(new String(data, StandardCharsets.UTF_8)));
+                        continue;
+                    }
                     // Mixin classes get a second pass to fix MC class names left in selector strings.
                     if (name.contains("/mixin/") && name.endsWith(".class")) {
                         byte[] data;
@@ -442,6 +455,28 @@ public final class VoxyRemapper {
             obj.add("mixins", mixins);
         }
         return new Gson().toJson(obj);
+    }
+
+    /** The shader asset patched by {@link #patchLightingGlsl} (REMAP_VERSION v38). */
+    private static final String LIGHTING_GLSL = "assets/voxy/shaders/lod/lighting.glsl";
+
+    /**
+     * Backport of the upstream 0.2.17-beta {@code getLightmapUv} fix. 0.2.14 maps the 16x16
+     * lightmap indices straight onto 0..1 plus a half-texel offset, without the 15/16 rescale that
+     * puts every index on a texel center — so high light levels sample between texels. Upstream:
+     * {@code base*(15.0/16.0) + 0.5/16.0}. The replacement is a byte-exact substring swap of the
+     * single {@code return clamp(...)} expression; if Voxy's shader ever changes, the pattern
+     * misses and the asset is copied unmodified (degrade, don't break).
+     */
+    private static String patchLightingGlsl(String src) {
+        String old = "return clamp((vec2((index>>4)&0xFu, index&0xFu)/15)+vec2(8.0f/256)";
+        String fixed = "return clamp((vec2((index>>4)&0xFu, index&0xFu)/15)*(15.0f/16.0f)+vec2(0.5f/16.0f)";
+        if (!src.contains(old)) {
+            org.slf4j.LoggerFactory.getLogger("Boxy/Remapper")
+                    .warn("Boxy: lighting.glsl did not match the expected 0.2.14 getLightmapUv pattern; leaving it unpatched");
+            return src;
+        }
+        return src.replace(old, fixed);
     }
 
     private static String readEntry(Path jar, String name) throws IOException {

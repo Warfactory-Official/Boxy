@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ public class BoxyModLocator extends AbstractJarFileModLocator {
                 return Stream.empty();
             }
             LOGGER.info("Boxy: found Voxy at {}", voxy);
+            ensureRadiumPlayerChunkTickDisabled();
             Path cacheDir = FMLPaths.GAMEDIR.get().resolve(".boxy").resolve("cache");
             Path embeddium = findSodiumAssetSource();
             Path oculus = findOculusJar();
@@ -176,6 +178,55 @@ public class BoxyModLocator extends AbstractJarFileModLocator {
                     .orElse(null);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * Radium (the Forge Lithium port) breaks player chunk delivery on this stack: with its
+     * {@code mixin.world.player_chunk_tick} optimization active, chunks around a moving/flying player
+     * intermittently never reach the client — no vanilla render, no collision ("finicky physics") — and
+     * Voxy paints LOD terrain into the holes, which presents as LODs rendering over real chunks / being
+     * culled wrongly (quirk 43; bisected in-game — every stage of Voxy's pipeline measured healthy while
+     * the vanilla chunks were simply absent client-side). Radium reads Lithium's config format from
+     * {@code config/lithium.properties}, so when a Lithium-port jar is present this writes the
+     * kill-switch for that one optimization before Radium's mixin plugin reads the file (mixin configs
+     * initialize after mod discovery, so locate time is early enough). An existing explicit setting for
+     * the key — either value — is respected and left untouched.
+     */
+    private static void ensureRadiumPlayerChunkTickDisabled() {
+        final String key = "mixin.world.player_chunk_tick";
+        try {
+            Path modsDir = FMLPaths.MODSDIR.get();
+            if (modsDir == null || !Files.isDirectory(modsDir)) return;
+            boolean lithiumPortPresent;
+            try (Stream<Path> jars = Files.list(modsDir)) {
+                lithiumPortPresent = jars
+                        .filter(p -> p.getFileName().toString().endsWith(".jar"))
+                        .anyMatch(p -> jarContains(p, "lithium.mixins.json"));
+            }
+            if (!lithiumPortPresent) return;
+
+            Path config = FMLPaths.CONFIGDIR.get().resolve("lithium.properties");
+            if (Files.exists(config)) {
+                for (String line : Files.readAllLines(config, StandardCharsets.UTF_8)) {
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith(key) && trimmed.substring(key.length()).trim().startsWith("=")) {
+                        return; // explicitly configured (either way) — respect it
+                    }
+                }
+            } else {
+                Files.createDirectories(config.getParent());
+            }
+            String entry = System.lineSeparator()
+                    + "# Added by Boxy: Radium's player_chunk_tick optimization drops chunk delivery to moving" + System.lineSeparator()
+                    + "# players on this stack (holes with no render/collision that Voxy fills with LODs, quirk 43)." + System.lineSeparator()
+                    + key + "=false" + System.lineSeparator();
+            Files.writeString(config, entry, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            LOGGER.info("Boxy: Radium/Lithium port detected — wrote {}=false to {} (chunk-delivery workaround, quirk 43)",
+                    key, config.getFileName());
+        } catch (Exception e) {
+            LOGGER.warn("Boxy: failed to apply the Radium player_chunk_tick workaround", e);
         }
     }
 
