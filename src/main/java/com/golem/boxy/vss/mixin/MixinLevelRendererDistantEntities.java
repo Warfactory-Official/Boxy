@@ -1,11 +1,16 @@
 package com.golem.boxy.vss.mixin;
 
 import com.golem.boxy.vss.client.ClientEntitySync;
+import com.golem.boxy.vss.client.DistantEntityDepthFix;
 import com.golem.boxy.vss.common.TrackedEntityTypes;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
@@ -20,6 +25,11 @@ import org.spongepowered.asm.mixin.injection.At;
  * the feature is on. Only the server-extended configured types ever sit in such chunks, so this is
  * naturally scoped to them. Client-only ({@code boxy.mixins.json} "client"); hand-SRG, {@code remap = false};
  * {@code require = 0} to degrade gracefully. Uses MixinExtras {@code @WrapOperation} (on Boxy's classpath).
+ *
+ * <p>A second wrap, on the {@code EntityRenderDispatcher.render} call inside
+ * {@code LevelRenderer.renderEntity} (SRG {@code m_109517_} → {@code m_114384_}), routes qualifying distant
+ * entities through {@link DistantEntityDepthFix}: their draws go to a private buffer flushed with a
+ * re-banded projection + depth range so they stop z-fighting at distance (§11 of the developer guide).
  */
 @Mixin(value = LevelRenderer.class, remap = false)
 public abstract class MixinLevelRendererDistantEntities {
@@ -34,5 +44,24 @@ public abstract class MixinLevelRendererDistantEntities {
             return true;
         }
         return compiled;
+    }
+
+    @WrapOperation(
+            method = "m_109517_",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderDispatcher;m_114384_(Lnet/minecraft/world/entity/Entity;DDDFFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V"),
+            require = 0)
+    private void boxy$renderDistantEntityRebanded(EntityRenderDispatcher dispatcher, Entity entity,
+            double x, double y, double z, float yaw, float partialTicks, PoseStack poseStack,
+            MultiBufferSource bufferSource, int packedLight, Operation<Void> original) {
+        if (!DistantEntityDepthFix.applies(entity, x, y, z, bufferSource)) {
+            original.call(dispatcher, entity, x, y, z, yaw, partialTicks, poseStack, bufferSource, packedLight);
+            return;
+        }
+        // The build runnable submits the entity into the fix's private buffer; PRECISE mode runs it several
+        // times (mask / fine / depth-restore passes). The helper flushes after every build, so a throwing
+        // renderer can't leak partial geometry into a later flush.
+        DistantEntityDepthFix.render(entity, x, y, z, poseStack,
+                () -> original.call(dispatcher, entity, x, y, z, yaw, partialTicks, poseStack,
+                        DistantEntityDepthFix.buffer(), packedLight));
     }
 }

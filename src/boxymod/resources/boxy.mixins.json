@@ -15,13 +15,11 @@
   "client": [
     "AccessorClientLevel",
     "AccessorVoxyModelBakeUpload",
-    "MixinAbstractTexture",
     "MixinBoxyFlashbackRecorder",
     "MixinClientPacketListenerServerPos",
     "MixinEmbeddiumOptionsGUI",
     "MixinEntityForeignTickGuard",
     "MixinEntityRenderDistance",
-    "MixinHttpTexture",
     "MixinVoxyDepthStateRestore",
     "MixinVoxyStencilMaskFix",
     "MixinVoxyModelBakeryWake",
@@ -30,7 +28,6 @@
     "MixinVoxyInstanceShutdownFix",
     "MixinVoxyModelFactoryFixes",
     "MixinVoxyRenderDataFactoryEmissive",
-    "MixinLevelRendererDistantEntities",
-    "MixinSimpleTexture"
+    "MixinLevelRendererDistantEntities"
   ]
 }

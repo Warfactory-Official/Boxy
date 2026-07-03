@@ -19,9 +19,12 @@ public class VSSClientConfig extends JsonConfig {
    public boolean extendEntityRenderDistance = true;
    public List<String> renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
    public int entityRenderDistanceChunks = 32;
-   // Mipmap entity/skin textures so distant entities don't alias into garbled noise. Off by default: it
-   // changes texture handling globally for all entities and costs a little VRAM. Requires a restart.
-   public boolean mipmapEntityTextures = false;
+   // Fix distant-entity z-fighting by re-banding the depth buffer around each tracked entity at render time
+   // (projection z-row swap + glDepthRange around a per-entity flush; see DistantEntityDepthFix and
+   // DistantEntityDepthMode: OFF / BASIC = depth stays exact / PRECISE = ~10x more depth steps for a
+   // slightly fuzzy occlusion boundary). Applies with or without an Oculus shaderpack (shaderpack support
+   // is experimental). Read live.
+   public DistantEntityDepthMode distantEntityDepthMode = DistantEntityDepthMode.BASIC;
 
    public VSSClientConfig() {
    }
@@ -37,6 +40,9 @@ public class VSSClientConfig extends JsonConfig {
       this.entityRenderDistanceChunks = VssMath.clamp((long)this.entityRenderDistanceChunks, 1, 512);
       if (this.renderedEntityTypes == null) {
          this.renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
+      }
+      if (this.distantEntityDepthMode == null) {
+         this.distantEntityDepthMode = DistantEntityDepthMode.BASIC;
       }
    }
 

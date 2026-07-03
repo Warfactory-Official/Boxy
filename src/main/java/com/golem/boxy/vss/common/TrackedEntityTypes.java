@@ -76,6 +76,17 @@ public final class TrackedEntityTypes {
         }
     }
 
+    private static final AtomicBoolean DIAG_SHARP_DEPTH = new AtomicBoolean();
+
+    /** One-time diagnostic from the depth re-band flush: confirms distant entities render with re-banded depth.
+     *  get()-guarded so the per-distant-entity-per-frame caller pays a volatile read, not a CAS, once fired. */
+    public static void diagSharpDepth(EntityType<?> type) {
+        if (!DIAG_SHARP_DEPTH.get() && DIAG_SHARP_DEPTH.compareAndSet(false, true)) {
+            VSSLogger.info("Boxy distant-entity depth re-band ACTIVE (z-fighting fix) — first type "
+                    + (type == null ? "<null>" : EntityType.getKey(type)));
+        }
+    }
+
     private static final AtomicBoolean DIAG_TICK = new AtomicBoolean();
 
     /** One-time diagnostic from the distant-entity ticker: confirms moving entities now get interpolated.

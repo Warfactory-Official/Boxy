@@ -1,12 +1,13 @@
 package com.golem.boxy.vss.client;
 
+import com.golem.boxy.vss.config.DistantEntityDepthMode;
 import com.golem.boxy.vss.config.VSSClientConfig;
 import com.google.common.collect.ImmutableList;
-import me.jellysquid.mods.sodium.client.gui.options.OptionFlag;
 import me.jellysquid.mods.sodium.client.gui.options.OptionGroup;
 import me.jellysquid.mods.sodium.client.gui.options.OptionImpact;
 import me.jellysquid.mods.sodium.client.gui.options.OptionImpl;
 import me.jellysquid.mods.sodium.client.gui.options.OptionPage;
+import me.jellysquid.mods.sodium.client.gui.options.control.CyclingControl;
 import me.jellysquid.mods.sodium.client.gui.options.control.SliderControl;
 import me.jellysquid.mods.sodium.client.gui.options.control.TickBoxControl;
 import net.minecraft.network.chat.Component;
@@ -20,8 +21,7 @@ import java.util.List;
  * screen, Embeddium runs the bindings then calls {@link BoxyOptionStorage#save()} to clamp + write the JSON.
  *
  * <p>Bindings operate on the {@link VSSClientConfig} returned by {@link BoxyOptionStorage#getData()}. Every
- * exposed field is read live by Boxy each tick/frame, so edits take effect immediately — except
- * {@code mipmapEntityTextures}, which is flagged {@link OptionFlag#REQUIRES_GAME_RESTART}.
+ * exposed field is read live by Boxy each tick/frame, so edits take effect immediately.
  * {@code renderedEntityTypes} (a string list) is deliberately not exposed here — Embeddium has no list
  * control, and while connected to a Boxy server the server's synced list is authoritative anyway; it remains
  * editable in {@code vss-client-config.json}.
@@ -40,34 +40,31 @@ public final class BoxyConfigPage {
         groups.add(OptionGroup.createBuilder()
                 .add(OptionImpl.createBuilder(boolean.class, storage)
                         .setName(Component.literal("Receive server LODs"))
-                        .setTooltip(Component.literal("Download and render distant terrain (LOD columns) streamed by a Boxy server. "
-                                + "Turning this off stops terrain streaming but still lets the server's distant-entity list sync."))
+                        .setTooltip(Component.literal("Download distant terrain from servers that stream it, so you can see far beyond your render distance. "
+                                + "Distant entities are unaffected by this setting."))
                         .setControl(TickBoxControl::new)
                         .setBinding((cfg, v) -> cfg.receiveServerLods = v, cfg -> cfg.receiveServerLods)
                         .setImpact(OptionImpact.MEDIUM)
                         .build())
                 .add(OptionImpl.createBuilder(int.class, storage)
                         .setName(Component.literal("Client LOD distance"))
-                        .setTooltip(Component.literal("Cap on how far (in chunks) to request server LODs. 0 = use the server's distance. "
-                                + "Effective distance is min(this, server, Voxy's render distance)."))
+                        .setTooltip(Component.literal("How far to request streamed terrain, in chunks. \"Server\" means as far as the server allows. "
+                                + "Never goes beyond Voxy's render distance."))
                         .setControl(opt -> new SliderControl(opt, 0, 512, 16, v -> Component.literal(v == 0 ? "Server" : v + " chunks")))
                         .setBinding((cfg, v) -> cfg.lodDistanceChunks = v, cfg -> cfg.lodDistanceChunks)
                         .setImpact(OptionImpact.MEDIUM)
                         .build())
                 .add(OptionImpl.createBuilder(boolean.class, storage)
                         .setName(Component.literal("Off-thread LOD processing"))
-                        .setTooltip(Component.literal("Deserialize received LOD columns on a background thread instead of the client thread. "
-                                + "Recommended on."))
+                        .setTooltip(Component.literal("Process received terrain on a background thread for smoother frame rates. Recommended on."))
                         .setControl(TickBoxControl::new)
                         .setBinding((cfg, v) -> cfg.offThreadSectionProcessing = v, cfg -> cfg.offThreadSectionProcessing)
                         .setImpact(OptionImpact.LOW)
                         .build())
                 .add(OptionImpl.createBuilder(boolean.class, storage)
                         .setName(Component.literal("Incremental LOD rescan"))
-                        .setTooltip(Component.literal("Experimental: re-center the outward LOD scan by how far you moved instead of restarting it "
-                                + "from scratch each time you cross a chunk or a nearby edit arrives. Much cheaper on the client thread while "
-                                + "travelling at large LOD distances. Off by default (uses the proven full-rescan path); turn on for smoother "
-                                + "frametimes while flying. Applies immediately."))
+                        .setTooltip(Component.literal("Experimental: skip re-checking terrain you already have while moving around. "
+                                + "Can improve frame rates while flying at large distances."))
                         .setControl(TickBoxControl::new)
                         .setBinding((cfg, v) -> cfg.incrementalSpiralRescan = v, cfg -> cfg.incrementalSpiralRescan)
                         .setImpact(OptionImpact.LOW)
@@ -78,30 +75,29 @@ public final class BoxyConfigPage {
         groups.add(OptionGroup.createBuilder()
                 .add(OptionImpl.createBuilder(boolean.class, storage)
                         .setName(Component.literal("Distant entity rendering"))
-                        .setTooltip(Component.literal("Render players and configured mobs far beyond vanilla's range, out toward Voxy's LOD distance. "
-                                + "This is a local opt-out: turning it off disables the feature even on a Boxy server. While connected, the "
-                                + "entity-type list comes from the server; for singleplayer/non-Boxy servers, edit renderedEntityTypes in "
-                                + "vss-client-config.json."))
+                        .setTooltip(Component.literal("Show players (and certain mobs) far beyond the normal range. "
+                                + "On supported servers, the server decides which mobs are included."))
                         .setControl(TickBoxControl::new)
                         .setBinding((cfg, v) -> cfg.extendEntityRenderDistance = v, cfg -> cfg.extendEntityRenderDistance)
                         .setImpact(OptionImpact.MEDIUM)
                         .build())
                 .add(OptionImpl.createBuilder(int.class, storage)
                         .setName(Component.literal("Entity render distance"))
-                        .setTooltip(Component.literal("How far (in chunks) to render distant entities when not synced by a Boxy server. "
-                                + "While connected to a Boxy server, the server's distance is used instead."))
+                        .setTooltip(Component.literal("How far away entities can be shown, in chunks. "
+                                + "Supported servers may use their own distance instead."))
                         .setControl(opt -> new SliderControl(opt, 1, 512, 1, v -> Component.literal(v + " chunks")))
                         .setBinding((cfg, v) -> cfg.entityRenderDistanceChunks = v, cfg -> cfg.entityRenderDistanceChunks)
                         .setImpact(OptionImpact.MEDIUM)
                         .build())
-                .add(OptionImpl.createBuilder(boolean.class, storage)
-                        .setName(Component.literal("Mipmap entity textures"))
-                        .setTooltip(Component.literal("Rebuild entity/skin textures with a mipmap chain so distant entities don't shimmer/alias. "
-                                + "Costs a little VRAM and changes texture handling for all entities. Requires a game restart."))
-                        .setControl(TickBoxControl::new)
-                        .setBinding((cfg, v) -> cfg.mipmapEntityTextures = v, cfg -> cfg.mipmapEntityTextures)
+                .add(OptionImpl.createBuilder(DistantEntityDepthMode.class, storage)
+                        .setName(Component.literal("Distant entity depth fix"))
+                        .setTooltip(Component.literal("Fix flickering and shimmering surfaces on faraway entities. "
+                                + "Basic is a single cheap pass; Precise draws distant entities in a few extra passes "
+                                + "for a fully stable image. While a shaderpack is active, Precise behaves like Basic."))
+                        .setControl(opt -> new CyclingControl<>(opt, DistantEntityDepthMode.class, new Component[]{
+                                Component.literal("Off"), Component.literal("Basic"), Component.literal("Precise")}))
+                        .setBinding((cfg, v) -> cfg.distantEntityDepthMode = v, cfg -> cfg.distantEntityDepthMode)
                         .setImpact(OptionImpact.LOW)
-                        .setFlags(OptionFlag.REQUIRES_GAME_RESTART)
                         .build())
                 .build());
 

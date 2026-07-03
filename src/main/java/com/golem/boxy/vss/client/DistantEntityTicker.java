@@ -49,6 +49,8 @@ public final class DistantEntityTicker {
         if (event.phase != TickEvent.Phase.END || !ClientEntitySync.enabled()) {
             return;
         }
+        // Between-frames framebuffer prep for the PRECISE depth fix (recreating it mid-frame is unsafe).
+        DistantEntityDepthFix.ensureStencil();
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         if (level == null || mc.isPaused()) {
