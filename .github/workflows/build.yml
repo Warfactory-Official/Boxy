@@ -35,12 +35,17 @@ jobs:
       - name: Checkout Boxy
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDKs (17 for Boxy, 21 for Voxy)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          # ForgeGradle 6 (1.20.1) is not compatible with newer JDKs (21, 25, ...); pin to 17.
-          java-version: '17'
+          # Boxy needs JDK 17 — ForgeGradle 6 (1.20.1) breaks on newer JDKs. Voxy's Fabric Loom 1.13
+          # plugin needs a JDK 21+ launcher. Install both: the last listed version (17) becomes the
+          # default JAVA_HOME (used for the Boxy build), and each is also exposed as
+          # JAVA_HOME_<ver>_X64 so the Voxy step can select 21 explicitly.
+          java-version: |
+            21
+            17
           cache: gradle
 
       - name: Resolve Voxy commit
@@ -64,6 +69,12 @@ jobs:
         if: steps.voxy-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          # Voxy's Loom 1.13 plugin requires a Java 21+ launcher (Boxy itself still builds on JDK 17).
+          if [ -z "${JAVA_HOME_21_X64:-}" ]; then
+            echo "::error::JDK 21 not available (JAVA_HOME_21_X64 unset)"; exit 1
+          fi
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          echo "Voxy build uses JAVA_HOME=$JAVA_HOME"
           git clone "$VOXY_REPO" voxy-src
           cd voxy-src
           git checkout "${{ steps.voxy.outputs.sha }}"
