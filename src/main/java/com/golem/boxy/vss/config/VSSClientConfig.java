@@ -24,7 +24,7 @@ public class VSSClientConfig extends JsonConfig {
    // DistantEntityDepthMode: OFF / BASIC = depth stays exact / PRECISE = ~10x more depth steps for a
    // slightly fuzzy occlusion boundary). Applies with or without an Oculus shaderpack (shaderpack support
    // is experimental). Read live.
-   public DistantEntityDepthMode distantEntityDepthMode = DistantEntityDepthMode.BASIC;
+   public DistantEntityDepthMode distantEntityDepthMode = DistantEntityDepthMode.PRECISE;
 
    public VSSClientConfig() {
    }
@@ -42,7 +42,7 @@ public class VSSClientConfig extends JsonConfig {
          this.renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
       }
       if (this.distantEntityDepthMode == null) {
-         this.distantEntityDepthMode = DistantEntityDepthMode.BASIC;
+         this.distantEntityDepthMode = DistantEntityDepthMode.PRECISE;
       }
    }
 
