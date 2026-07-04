@@ -28,6 +28,18 @@ the same on NeoForge.
   render through the active shaderpack.
 - **Integrations** — Chunky auto-ingest, Starlight, and C2ME.
 
+## How it works
+
+Voxy's jar is compiled in Fabric's *intermediary* naming (`class_310`, `method_1551`); Forge 1.20.1
+runs in *SRG*. Boxy's core job is to rewrite every Minecraft reference in Voxy's bytecode from
+intermediary to SRG **at load time, in memory**, before Forge sees it — plus translate Fabric metadata
+to Forge, bridge the Fabric APIs Voxy calls, and apply a few compatibility patches. Boxy's own features
+(VSS, distant entities) ship as a separate game-layer mod that the same locator hands to Forge, so
+Voxy's jar stays pristine.
+
+The full story — the two-classloader-layer architecture, the mapping composition, the mixin handling,
+and the catalog of every quirk — is in the [**Developer Guide**](DEVELOPER_GUIDE.md).
+
 ## Using Boxy (players)
 
 Drop these into your instance's `mods/` folder:
@@ -66,6 +78,13 @@ After building, sanity-check that `META-INF/MANIFEST.MF` is still the first jar 
 unzip -l build/libs/boxy-<version>.jar | head
 unzip -p build/libs/boxy-<version>.jar META-INF/MANIFEST.MF | grep Automatic-Module-Name
 ```
+
+### CI / Releases
+
+[`.github/workflows/build.yml`](.github/workflows/build.yml) builds the production jar on every push
+and PR — it builds the Voxy dev jar from source automatically (cached by Voxy commit), so CI needs no
+manual `libs/` setup — and runs the manifest sanity check above. Pushing a `v*` tag (e.g. `v1.0.0`)
+additionally publishes a GitHub Release with the jar attached, versioned from the tag.
 
 ## Dependencies (`libs/`)
 
@@ -114,18 +133,6 @@ bundles, kept in lock-step.
 [Sinytra](https://github.com/Sinytra/MixinTransmogrifier), originally created by
 [SteelwoolMC](https://github.com/SteelwoolMC/MixinTransmogrifier). To refresh these classes, extract
 `io/github/steelwoolmc/mixintransmog/**` from a Transmogrifier build into `libs/mixintransmog/`.
-
-## How it works
-
-Voxy's jar is compiled in Fabric's *intermediary* naming (`class_310`, `method_1551`); Forge 1.20.1
-runs in *SRG*. Boxy's core job is to rewrite every Minecraft reference in Voxy's bytecode from
-intermediary to SRG **at load time, in memory**, before Forge sees it — plus translate Fabric metadata
-to Forge, bridge the Fabric APIs Voxy calls, and apply a few compatibility patches. Boxy's own features
-(VSS, distant entities) ship as a separate game-layer mod that the same locator hands to Forge, so
-Voxy's jar stays pristine.
-
-The full story — the two-classloader-layer architecture, the mapping composition, the mixin handling,
-and the catalog of every quirk — is in the [**Developer Guide**](DEVELOPER_GUIDE.md).
 
 ## Credits
 
