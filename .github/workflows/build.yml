@@ -1,0 +1,175 @@
+name: Build & Release
+
+# Builds Boxy's production jar on every push and PR (CI), and on a `v*` tag push it also
+# publishes a GitHub Release with the jar attached.
+#
+# Boxy compiles against Voxy's Mojmap "dev" jar, which is compile-only, is not published to any
+# Maven, and is deliberately not committed (see README.md -> Dependencies). This workflow builds
+# that jar from source (m3t4f1v3/voxy) and drops it into libs/ before building Boxy. The result is
+# cached and keyed on the resolved Voxy commit, so Voxy only rebuilds when VOXY_REF changes.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+# Cancel superseded runs for the same ref. Each tag is a unique ref, so release builds are never
+# cancelled by one another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin VOXY_REF to a commit or tag to freeze Voxy's API. Boxy's source targets Voxy 0.2.14-alpha;
+  # the mc_1201 branch is the documented source for that dev jar (README.md -> Dependencies).
+  VOXY_REPO: https://github.com/m3t4f1v3/voxy.git
+  VOXY_REF: mc_1201
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release and upload the jar on tag pushes
+    steps:
+      - name: Checkout Boxy
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # ForgeGradle 6 (1.20.1) is not compatible with newer JDKs (21, 25, ...); pin to 17.
+          java-version: '17'
+          cache: gradle
+
+      - name: Resolve Voxy commit
+        id: voxy
+        run: |
+          refs=$(git ls-remote "$VOXY_REPO" "$VOXY_REF" || true)
+          sha=${refs%%$'\t'*}
+          # If VOXY_REF was already a full commit SHA, ls-remote returns nothing — use it verbatim.
+          if [ -z "$sha" ]; then sha="$VOXY_REF"; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Voxy $VOXY_REF -> $sha"
+
+      - name: Cache Voxy dev jar
+        id: voxy-cache
+        uses: actions/cache@v4
+        with:
+          path: voxy-devjar
+          key: voxy-devjar-${{ steps.voxy.outputs.sha }}
+
+      - name: Build Voxy dev jar
+        if: steps.voxy-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone "$VOXY_REPO" voxy-src
+          cd voxy-src
+          git checkout "${{ steps.voxy.outputs.sha }}"
+          chmod +x gradlew
+          # Skip tests: they don't affect the produced dev jar and would only slow/flake the build.
+          ./gradlew build -x test --no-daemon --stacktrace
+          shopt -s nullglob
+          # Newer Loom emits the named/dev jar under build/devlibs/, older Loom under build/libs/.
+          cands=(build/devlibs/voxy-*-dev.jar build/libs/voxy-*-dev.jar)
+          if [ ${#cands[@]} -eq 0 ]; then
+            echo "::error::Voxy dev jar not found after build"; find build -name '*.jar' || true; exit 1
+          fi
+          # Create the cached dir only once we actually have a jar, so a failed build never caches
+          # an empty voxy-devjar/ (which would poison later cache-hit runs).
+          mkdir -p "$GITHUB_WORKSPACE/voxy-devjar"
+          cp "${cands[0]}" "$GITHUB_WORKSPACE/voxy-devjar/"
+          echo "Built $(basename "${cands[0]}")"
+
+      - name: Stage Voxy dev jar into libs/
+        run: |
+          set -euo pipefail
+          mkdir -p libs
+          cp voxy-devjar/voxy-*-dev.jar libs/
+          ls -l libs/voxy-*-dev.jar
+
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          ref="$GITHUB_REF"
+          if [ "${ref#refs/tags/}" != "$ref" ]; then
+            v="${ref#refs/tags/}"; v="${v#v}"   # strip refs/tags/ and a leading "v"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "mod_version=$v" >> "$GITHUB_OUTPUT"
+            echo "Release build, mod_version=$v"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "CI build (no release)"
+          fi
+
+      - name: Build Boxy
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          # shadowJar's finalizer chain (reobfShadowJar -> embedMixinUpgrade) produces the complete
+          # production jar. On a tag build, align the jar/mods.toml version to the tag.
+          if [ "${{ steps.version.outputs.release }}" = "true" ]; then
+            ./gradlew shadowJar --no-daemon --stacktrace -Pmod_version="${{ steps.version.outputs.mod_version }}"
+          else
+            ./gradlew shadowJar --no-daemon --stacktrace
+          fi
+
+      - name: Collect production jar
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          shopt -s nullglob
+          prod=""
+          for j in build/libs/boxy-*.jar; do
+            case "$j" in *-slim.jar) ;; *) prod="$j" ;; esac   # skip the intermediate slim jar
+          done
+          if [ -z "$prod" ]; then
+            echo "::error::No production jar found"; ls -l build/libs || true; exit 1
+          fi
+          cp "$prod" release/
+          echo "jar_name=$(basename "$prod")" >> "$GITHUB_OUTPUT"
+          echo "Production jar: $(basename "$prod")"
+
+      - name: Verify production jar
+        run: |
+          set -euo pipefail
+          jar="release/${{ steps.collect.outputs.jar_name }}"
+          # MANIFEST.MF must be the first *file* entry so securejarhandler reads the loader module
+          # name (Developer Guide §15). A leading META-INF/ directory entry is normal and tolerated,
+          # so check the first non-directory entry rather than the very first entry.
+          listing=$(zipinfo -1 "$jar")
+          first_file=""
+          while IFS= read -r e; do
+            case "$e" in ''|*/) continue ;; esac   # skip blank lines and directory entries
+            first_file="$e"; break
+          done <<<"$listing"
+          echo "First file entry: $first_file"
+          if [ "$first_file" != "META-INF/MANIFEST.MF" ]; then
+            echo "::error::First file entry is '$first_file', expected META-INF/MANIFEST.MF"; exit 1
+          fi
+          mf=$(unzip -p "$jar" META-INF/MANIFEST.MF)
+          if ! grep -q 'Automatic-Module-Name: boxyloader' <<<"$mf"; then
+            echo "::error::Manifest missing 'Automatic-Module-Name: boxyloader'"; exit 1
+          fi
+          echo "Manifest OK"
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxy-${{ steps.version.outputs.mod_version || github.sha }}
+          path: release/*.jar
+          if-no-files-found: error
+
+      - name: Publish release
+        if: steps.version.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: release/*.jar
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          # Treat semver pre-release tags (containing a hyphen, e.g. v1.0.0-alpha) as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}

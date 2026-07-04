@@ -8,6 +8,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -44,6 +45,36 @@ public abstract class MixinLevelRendererDistantEntities {
             return true;
         }
         return compiled;
+    }
+
+    /**
+     * Safety net against third-party entity cullers. Mods like Sodium/Embeddium Extra add their own
+     * entity-distance culling by injecting deeper in the chain ({@code EntityRenderer.shouldRender}), which
+     * vetoes distant tracked entities before Boxy's distance gate (gate 2) can speak — the whole feature
+     * silently stops rendering. We wrap the {@code EntityRenderDispatcher.shouldRender} call (SRG
+     * {@code m_114397_}) in {@code renderLevel}: when it returns false for a tracked type while the feature
+     * is on, we re-run the decision vanilla would have made — Boxy's extended distance cull plus the real
+     * frustum test — so a foreign distance veto is overridden without breaking frustum culling.
+     */
+    @WrapOperation(
+            method = "m_109599_",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderDispatcher;m_114397_(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/client/renderer/culling/Frustum;DDD)Z"),
+            require = 0)
+    private boolean boxy$overrideForeignEntityCull(EntityRenderDispatcher dispatcher, Entity entity,
+            Frustum frustum, double camX, double camY, double camZ, Operation<Boolean> original) {
+        boolean visible = original.call(dispatcher, entity, frustum, camX, camY, camZ);
+        if (visible || !ClientEntitySync.enabled() || !TrackedEntityTypes.clientContains(entity.getType())) {
+            return visible;
+        }
+        double max = (double) ClientEntitySync.distanceChunks() * 16.0;
+        if (entity.distanceToSqr(camX, camY, camZ) > max * max) {
+            return false;
+        }
+        boolean inFrustum = entity.noCulling || frustum.isVisible(entity.getBoundingBoxForCulling().inflate(0.5));
+        if (inFrustum) {
+            TrackedEntityTypes.diagForeignCullOverride(entity.getType());
+        }
+        return inFrustum;
     }
 
     @WrapOperation(

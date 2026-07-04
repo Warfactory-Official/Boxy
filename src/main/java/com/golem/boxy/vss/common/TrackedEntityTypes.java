@@ -76,6 +76,17 @@ public final class TrackedEntityTypes {
         }
     }
 
+    private static final AtomicBoolean DIAG_FOREIGN_CULL = new AtomicBoolean();
+
+    /** One-time diagnostic from the foreign-culler override: another mod vetoed a distant tracked entity and
+     *  Boxy re-allowed it. get()-guarded so the per-entity-per-frame caller pays a volatile read once fired. */
+    public static void diagForeignCullOverride(EntityType<?> type) {
+        if (!DIAG_FOREIGN_CULL.get() && DIAG_FOREIGN_CULL.compareAndSet(false, true)) {
+            VSSLogger.info("Boxy re-allowed a distant tracked entity vetoed by another mod's entity culling — first type "
+                    + (type == null ? "<null>" : EntityType.getKey(type)));
+        }
+    }
+
     private static final AtomicBoolean DIAG_SHARP_DEPTH = new AtomicBoolean();
 
     /** One-time diagnostic from the depth re-band flush: confirms distant entities render with re-banded depth.

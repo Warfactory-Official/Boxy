@@ -1,6 +1,9 @@
 package com.golem.boxy.vss.mixin;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.effect.MobEffects;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Coerce;
@@ -28,6 +31,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(targets = "me.cortex.voxy.client.core.AbstractRenderPipeline", remap = false)
 public class MixinVoxyDepthStateRestore {
+    /**
+     * Skip the whole LOD pipeline while the local player is blinded (or has darkness). Vanilla's blindness
+     * fog closes a few blocks out; Voxy's vanilla pipeline happens to bail on its own (its composite checks
+     * the captured fog range), but the <b>Iris</b> pipeline renders LODs through the shaderpack, which fogs
+     * them with the pack's own logic — most packs don't apply blindness to Voxy's LOD program, so distant
+     * terrain stays visible through an effect that should black the world out (quirk 47). Cancelling at HEAD
+     * is clean: {@code runPipeline}'s first act is its own setup, so no GL state has been touched yet.
+     */
+    @Inject(method = "runPipeline", at = @At("HEAD"), cancellable = true, require = 0)
+    private void boxy$skipLodsWhileBlinded(@Coerce Object viewport, int sourceFrameBuffer, int srcWidth, int srcHeight, CallbackInfo ci) {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player != null && (player.hasEffect(MobEffects.BLINDNESS) || player.hasEffect(MobEffects.DARKNESS))) {
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "runPipeline", at = @At("TAIL"), require = 0)
     private void boxy$restoreDepthState(@Coerce Object viewport, int sourceFrameBuffer, int srcWidth, int srcHeight, CallbackInfo ci) {
         // off→on forces a real glEnable even though RenderSystem's cache still reads "enabled" after Voxy's
