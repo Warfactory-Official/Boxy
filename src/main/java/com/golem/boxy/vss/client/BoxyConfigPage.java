@@ -101,6 +101,34 @@ public final class BoxyConfigPage {
                         .build())
                 .build());
 
+        // ---- LOD rendering fixes ----
+        groups.add(OptionGroup.createBuilder()
+                .add(OptionImpl.createBuilder(boolean.class, storage)
+                        .setName(Component.literal("High-FOV LOD fix"))
+                        .setTooltip(Component.literal("Stop distant terrain from disappearing near the edges of the screen at a wide field of view. "
+                                + "Uses a little more video memory. Recommended on."))
+                        .setControl(TickBoxControl::new)
+                        .setBinding((cfg, v) -> cfg.conservativeHiZ = v, cfg -> cfg.conservativeHiZ)
+                        .setImpact(OptionImpact.LOW)
+                        .build())
+                .add(OptionImpl.createBuilder(boolean.class, storage)
+                        .setName(Component.literal("Brighten distant LOD light"))
+                        .setTooltip(Component.literal("Stop far-off terrain from turning dark as it gets blockier. "
+                                + "Only affects terrain loaded after this is switched on."))
+                        .setControl(TickBoxControl::new)
+                        .setBinding((cfg, v) -> cfg.brightenMippedLodLight = v, cfg -> cfg.brightenMippedLodLight)
+                        .setImpact(OptionImpact.LOW)
+                        .build())
+                .add(OptionImpl.createBuilder(boolean.class, storage)
+                        .setName(Component.literal("Fix black LOD patches"))
+                        .setTooltip(Component.literal("Stop open, fully-lit ground from being saved as black distant terrain. "
+                                + "Only affects terrain loaded after this is switched on."))
+                        .setControl(TickBoxControl::new)
+                        .setBinding((cfg, v) -> cfg.fillUniformSkyLight = v, cfg -> cfg.fillUniformSkyLight)
+                        .setImpact(OptionImpact.LOW)
+                        .build())
+                .build());
+
         return new OptionPage(Component.literal("Boxy"), ImmutableList.copyOf(groups));
     }
 }

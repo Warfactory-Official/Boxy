@@ -25,6 +25,26 @@ public class VSSClientConfig extends JsonConfig {
    // slightly fuzzy occlusion boundary). Applies with or without an Oculus shaderpack (shaderpack support
    // is experimental). Read live.
    public DistantEntityDepthMode distantEntityDepthMode = DistantEntityDepthMode.PRECISE;
+   // Round Voxy's hierarchical-Z occlusion buffer UP to the next power of two instead of down, so its depth
+   // pyramid over-estimates (the only direction that is safe for an occlusion test) rather than under-estimates.
+   // Voxy rounds down, which makes level 0 a downscale that its single 2x2 textureGather cannot fully cover;
+   // the resulting too-small maximum over-culls LOD nodes wherever the per-pixel depth gradient is steep —
+   // i.e. the grazing views a high FOV pushes into the screen periphery, which is why LOD sections go missing
+   // at the screen edges at FOV 110. Costs HiZ memory (~22 MB vs ~2.8 MB at 1920x1080). See
+   // MixinVoxyHiZConservative. Read live — toggling reallocates on the next frame.
+   public boolean conservativeHiZ = true;
+   // Lift a mipped LOD voxel's light to the maximum over its eight children (air included — Minecraft keeps
+   // light at a position, so an opaque block's own entry is ~0 and the light you see on its face lives in
+   // the adjacent air). Voxy's Mipper.mip elects its representative child by opacity alone and returns it
+   // verbatim, so the elected child's stored 0 becomes the node's light and distant terrain darkens as the
+   // LOD coarsens. See MixinVoxyMipperLodLight. Applies at ingest — existing stored LODs keep their old
+   // light until re-ingested.
+   public boolean brightenMippedLodLight = true;
+   // Supply full skylight for sections Minecraft leaves without a sky-light array because they are uniformly
+   // lit. Voxy's getLightingSupplier treats an absent/empty layer as light 0, so open flat terrain ingests
+   // pitch black while playing; region files store explicit arrays, which is why /voxy import produces
+   // correct data for the same terrain. See MixinVoxyIngestUniformSkyLight. Applies at ingest.
+   public boolean fillUniformSkyLight = true;
 
    public VSSClientConfig() {
    }
