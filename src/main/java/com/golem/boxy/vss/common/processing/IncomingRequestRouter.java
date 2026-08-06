@@ -1,10 +1,11 @@
 package com.golem.boxy.vss.common.processing;
 
 import com.golem.boxy.vss.common.PositionUtil;
+import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.voxel.ColumnTimestampCache;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.LongSets;
 import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.UUID;
@@ -31,14 +32,15 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       TickSnapshot snapshot,
       Map<UUID, PS> players,
       IncomingRequestRouter.DiskReadSubmitter diskReadSubmitter,
-      IncomingRequestRouter.LoadedColumnSerializer<PS> loadedSerializer,
+      IncomingRequestRouter.LiveColumnRouter liveColumnRouter,
+      IncomingRequestRouter.ColumnPayloadEnqueuer<PS> payloadEnqueuer,
       long cycleNow
    ) {
       for (Entry<UUID, TickSnapshot.PlayerTickData> entry : snapshot.players().entrySet()) {
          if (!entry.getValue().dimensionChanged()) {
             PS state = players.get(entry.getKey());
             if (state != null && state.supportsVoxelColumns()) {
-               this.processIncomingRequests(state, entry.getKey(), entry.getValue(), snapshot, diskReadSubmitter, loadedSerializer, cycleNow);
+               this.processIncomingRequests(state, entry.getKey(), entry.getValue(), snapshot, diskReadSubmitter, liveColumnRouter, payloadEnqueuer, cycleNow);
             }
          }
       }
@@ -50,15 +52,19 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       TickSnapshot.PlayerTickData playerData,
       TickSnapshot snapshot,
       IncomingRequestRouter.DiskReadSubmitter diskReadSubmitter,
-      IncomingRequestRouter.LoadedColumnSerializer<PS> loadedSerializer,
+      IncomingRequestRouter.LiveColumnRouter liveColumnRouter,
+      IncomingRequestRouter.ColumnPayloadEnqueuer<PS> payloadEnqueuer,
       long cycleNow
    ) {
       String dimension = playerData.dimension();
-      Long2ObjectMap<LoadedColumnData> loadedProbes = snapshot.loadedChunkProbes().getOrDefault(playerUuid, Long2ObjectMaps.emptyMap());
-      this.drainWaitingQueue(state, playerUuid, dimension, loadedProbes, snapshot, diskReadSubmitter, loadedSerializer, cycleNow);
+      LongSet loadedPositions = snapshot.loadedPositions().getOrDefault(playerUuid, LongSets.EMPTY_SET);
+      this.drainWaitingQueue(state, playerUuid, dimension, loadedPositions, snapshot, diskReadSubmitter, liveColumnRouter, payloadEnqueuer, cycleNow);
 
+      // Bounded by the prefix the server thread probed this tick — see TickSnapshot.PlayerTickData.probedCount.
+      int remaining = playerData.probedCount();
       IncomingRequest req;
-      while ((req = state.pollIncomingRequest()) != null) {
+      while (remaining > 0 && (req = state.pollIncomingRequest()) != null) {
+         remaining--;
          if (!this.resolvedAsDuplicate(state, playerUuid, req)) {
             if (this.sendQueueFull(state, snapshot)) {
                break;
@@ -66,7 +72,7 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
 
             long packed = PositionUtil.packPosition(req.cx(), req.cz());
             if (!this.resolvedFromTimestamp(state, playerUuid, req, packed, dimension)
-               && !this.resolvedFromLoadedProbe(state, playerUuid, req, packed, loadedProbes, dimension, loadedSerializer, cycleNow)) {
+               && !this.resolvedFromLiveColumn(state, playerUuid, req, packed, loadedPositions, dimension, liveColumnRouter, payloadEnqueuer, cycleNow)) {
                RequestType type = req.clientTimestamp() == 0L ? RequestType.GENERATION : RequestType.SYNC;
                ConcurrencyLimiter limiter = this.tryConcurrencyOrEnqueue(state, playerUuid, req, type, dimension);
                if (limiter != null) {
@@ -81,10 +87,11 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       PS state,
       UUID playerUuid,
       String dimension,
-      Long2ObjectMap<LoadedColumnData> loadedProbes,
+      LongSet loadedPositions,
       TickSnapshot snapshot,
       IncomingRequestRouter.DiskReadSubmitter diskReadSubmitter,
-      IncomingRequestRouter.LoadedColumnSerializer<PS> loadedSerializer,
+      IncomingRequestRouter.LiveColumnRouter liveColumnRouter,
+      IncomingRequestRouter.ColumnPayloadEnqueuer<PS> payloadEnqueuer,
       long cycleNow
    ) {
       ArrayDeque<AbstractPlayerRequestState.QueuedRequest> queue = state.getWaitingQueue();
@@ -98,7 +105,7 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
             this.ctx.sendActions().add(new SendAction.ColumnUpToDate(playerUuid, req.requestId()));
          } else if (this.resolvedFromTimestamp(state, playerUuid, req, packed, dimension)) {
             queue.poll();
-         } else if (this.resolvedFromLoadedProbe(state, playerUuid, req, packed, loadedProbes, dimension, loadedSerializer, cycleNow)) {
+         } else if (this.resolvedFromLiveColumn(state, playerUuid, req, packed, loadedPositions, dimension, liveColumnRouter, payloadEnqueuer, cycleNow)) {
             queue.poll();
          } else {
             ConcurrencyLimiter limiter = state.getRateLimiters().forRequest(queued.type(), this.diskReadingAvailable);
@@ -168,26 +175,60 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       }
    }
 
-   private boolean resolvedFromLoadedProbe(
+   /**
+    * Routes a request whose chunk the server thread found loaded this tick.
+    *
+    * <p>Unless the cache already has them, the bytes do not exist yet: the server thread only probed for
+    * presence, and serializing a column is the single most expensive thing this mod does on the main thread,
+    * so it is deferred until here — after duplicate, send-queue and timestamp checks have had their say. Most
+    * probed columns never reach this point, which is the entire win.
+    *
+    * <p>The deferred path deliberately acquires {@code syncOnLoad()} and registers the same pending/dedup
+    * bookkeeping the disk path uses, because the serialized result is delivered into the same per-player
+    * result queue. That queue's drain releases {@code syncOnLoad()} unconditionally for every result, so
+    * acquiring anything else here would leak a permit per column and eventually starve the player to zero
+    * throughput. The cache-hit path takes no permit at all, because no result is coming to release one.
+    *
+    * <p>Returns false when the permit is unavailable, letting the caller fall through to the normal
+    * concurrency/waiting-queue back-pressure exactly as if the chunk had not been loaded.
+    */
+   private boolean resolvedFromLiveColumn(
       PS state,
       UUID playerUuid,
       IncomingRequest req,
       long packed,
-      Long2ObjectMap<LoadedColumnData> probes,
+      LongSet loadedPositions,
       String dimension,
-      IncomingRequestRouter.LoadedColumnSerializer<PS> loadedSerializer,
+      IncomingRequestRouter.LiveColumnRouter liveColumnRouter,
+      IncomingRequestRouter.ColumnPayloadEnqueuer<PS> payloadEnqueuer,
       long cycleNow
    ) {
-      LoadedColumnData probe = (LoadedColumnData)probes.get(packed);
-      if (probe == null) {
+      if (!loadedPositions.contains(packed)) {
+         return false;
+      }
+
+      // Cache hit: the bytes already exist, so serve synchronously and skip the round trip entirely — no
+      // permit, no pending entry, nothing to release, and none of the ~2-tick deferral.
+      byte[] cached = this.ctx.bytesCache().get(dimension, packed);
+      if (cached != null) {
+         payloadEnqueuer.enqueue(state, req.cx(), req.cz(), dimension, req.requestId(), cycleNow, this.ctx.sequence().next(),
+            cached, cached.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES);
+         this.timestampCache.put(dimension, packed, cycleNow, cycleNow);
+         state.markDiskReadDone(req.cx(), req.cz());
+         this.ctx.diagnostics().incrementInMemory();
+         return true;
+      }
+
+      if (!state.getRateLimiters().syncOnLoad().tryAcquire()) {
          return false;
       } else {
-         boolean sent = loadedSerializer.serializeAndEnqueue(state, probe, req.requestId(), cycleNow, this.ctx.sequence().next(), dimension);
-         if (!sent) {
-            this.ctx.sendActions().add(new SendAction.ColumnUpToDate(playerUuid, req.requestId()));
+         long order = this.ctx.sequence().next();
+         state.addPendingRequest(new PendingRequest(req.requestId(), req.cx(), req.cz(), RequestType.SYNC));
+         // Attached: another player already asked for this column and will get the bytes dispatched to both.
+         if (!this.dedupTracker.tryAttachOrCreate(packed, dimension, playerUuid, req.requestId(), order)) {
+            liveColumnRouter.requestLiveSerialize(playerUuid, req.requestId(), dimension, req.cx(), req.cz(), order);
          }
 
-         state.markDiskReadDone(req.cx(), req.cz());
          this.ctx.diagnostics().incrementInMemory();
          return true;
       }
@@ -242,8 +283,19 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       void submit(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder);
    }
 
+   /**
+    * Asks the server thread to serialize a live chunk and publish the bytes into the player's disk-result
+    * queue. Called from the processing thread; the work happens on the next tick.
+    */
    @FunctionalInterface
-   interface LoadedColumnSerializer<PS> {
-      boolean serializeAndEnqueue(PS state, LoadedColumnData column, int requestId, long columnTimestamp, long submissionOrder, String dimension);
+   interface LiveColumnRouter {
+      void requestLiveSerialize(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder);
+   }
+
+   /** Queues an already-serialized column straight onto a player's send queue (the cache-hit path). */
+   @FunctionalInterface
+   interface ColumnPayloadEnqueuer<PS> {
+      void enqueue(PS state, int cx, int cz, String dimension, int requestId, long columnTimestamp, long submissionOrder,
+         byte[] sectionBytes, int estimatedBytes);
    }
 }

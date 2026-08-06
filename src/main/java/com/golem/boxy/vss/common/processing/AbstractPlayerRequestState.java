@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.util.PriorityQueue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implements PlayerStateAccess {
@@ -26,6 +27,8 @@ public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implem
    private final RateLimiterSet rateLimiters;
    private final ArrayDeque<AbstractPlayerRequestState.QueuedRequest> waitingQueue = new ArrayDeque<>();
    private final AtomicLong totalRequestsReceived = new AtomicLong();
+   /** Tracks incomingRequests depth; ConcurrentLinkedQueue.size() is O(n) and this is read per packet. */
+   private final AtomicInteger incomingRequestCount = new AtomicInteger();
    private volatile long desiredBandwidth = Long.MAX_VALUE;
    private volatile int sendQueueSizeSnapshot = 0;
    private volatile int pendingSyncCount = 0;
@@ -57,8 +60,22 @@ public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implem
       return this.hasHandshake;
    }
 
+   /**
+    * Requests are no longer guaranteed to be fully drained every cycle: the router only walks the prefix the
+    * server thread probed, which a tight probe budget can make shorter than the inflow. Left unbounded, a
+    * client outrunning the budget would grow this queue without limit. Dropping the overflow is safe — the
+    * client's 10s timeout sweep re-requests anything it never heard back about, and the send-queue-full path
+    * already relies on exactly that.
+    */
+   private static final int MAX_QUEUED_INCOMING_REQUESTS = 8192;
+
    protected void enqueueIncomingRequest(IncomingRequest request) {
+      if (this.incomingRequestCount.get() >= MAX_QUEUED_INCOMING_REQUESTS) {
+         return;
+      }
+
       this.incomingRequests.add(request);
+      this.incomingRequestCount.incrementAndGet();
       this.totalRequestsReceived.incrementAndGet();
    }
 
@@ -99,6 +116,7 @@ public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implem
 
    protected void onDimensionChangeBase() {
       this.incomingRequests.clear();
+      this.incomingRequestCount.set(0);
       this.incomingCancels.clear();
       this.readyPayloads.clear();
       this.sendQueue.clear();
@@ -117,7 +135,16 @@ public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implem
 
    @Override
    public IncomingRequest pollIncomingRequest() {
-      return this.incomingRequests.poll();
+      IncomingRequest polled = this.incomingRequests.poll();
+      if (polled != null) {
+         this.incomingRequestCount.decrementAndGet();
+      }
+
+      return polled;
+   }
+
+   public int getIncomingRequestCount() {
+      return this.incomingRequestCount.get();
    }
 
    @Override

@@ -17,8 +17,12 @@ public class VSSServerConfig extends JsonConfig {
    public int generationTimeoutSeconds = 60;
    public int dirtyBroadcastIntervalSeconds = 2;
    public boolean liveDirtyUpdates = true;
-   public int syncOnLoadRateLimitPerPlayer = 800;
-   public int syncOnLoadConcurrencyLimitPerPlayer = 200;
+   // Loaded columns are no longer serialized inline during the probe; they acquire a syncOnLoad permit and
+   // are serialized on the next tick, so they now hold permits that the old inline path never took. Sized to
+   // match the per-player probe cap so a burst of loaded chunks isn't immediately pushed into the waiting
+   // queue. Overflow is still graceful (waiting queue, then RateLimited), just slower.
+   public int syncOnLoadRateLimitPerPlayer = 1000;
+   public int syncOnLoadConcurrencyLimitPerPlayer = 512;
    public int generationRateLimitPerPlayer = 80;
    public int generationConcurrencyLimitPerPlayer = 16;
    public int perDimensionTimestampCacheSizeMB = 32;
@@ -27,6 +31,20 @@ public class VSSServerConfig extends JsonConfig {
    public int entityTrackingDistanceChunks = 32;
    public boolean forceLoadTrackedEntities = false;
    public int forceLoadRadiusChunks = 2;
+   /**
+    * Wall-clock budget, in microseconds, for everything this mod does to live chunks on the server thread in
+    * one tick: probing which requested columns are loaded, plus serializing the ones the router asked for.
+    * Shared across all players rather than per-player, so total cost is bounded regardless of player count.
+    * 2000us is ~4% of a 50ms tick. 0 disables the budget (unbounded — debugging/parity only).
+    */
+   public int probeBudgetMicros = 2000;
+   /**
+    * Per-dimension budget, in MB, for the cache of already-serialized column bytes. Its main job is sparing
+    * the disk reader from re-reading and re-decoding a region file every time a different player asks for the
+    * same column; on the live path a hit also serves the column immediately instead of deferring it a tick.
+    * At 20-120KB per column, 64MB holds roughly 600-3000 columns. 0 disables the cache.
+    */
+   public int serializedColumnCacheSizeMB = 64;
 
    public VSSServerConfig() {
    }
@@ -53,6 +71,13 @@ public class VSSServerConfig extends JsonConfig {
       this.perDimensionTimestampCacheSizeMB = VssMath.clamp((long)this.perDimensionTimestampCacheSizeMB, 1, 256);
       this.entityTrackingDistanceChunks = VssMath.clamp((long)this.entityTrackingDistanceChunks, 1, 512);
       this.forceLoadRadiusChunks = VssMath.clamp((long)this.forceLoadRadiusChunks, 1, 64);
+      if (this.probeBudgetMicros != 0) {
+         this.probeBudgetMicros = VssMath.clamp((long)this.probeBudgetMicros, 100, 25000);
+      }
+
+      if (this.serializedColumnCacheSizeMB != 0) {
+         this.serializedColumnCacheSizeMB = VssMath.clamp((long)this.serializedColumnCacheSizeMB, 1, 2048);
+      }
       if (this.trackedEntityTypes == null) {
          this.trackedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
       }

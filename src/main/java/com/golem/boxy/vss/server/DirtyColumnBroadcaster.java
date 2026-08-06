@@ -4,6 +4,7 @@ import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.tracking.DirtyColumnTracker;
+import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.net.VssChannels;
 import com.golem.boxy.vss.payloads.DirtyColumnsS2CPayload;
@@ -22,15 +23,18 @@ class DirtyColumnBroadcaster {
     private final Map<UUID, PlayerRequestState> players;
     private final ForgeOffThreadProcessor offThreadProcessor;
     private final DirtyColumnTracker dirtyTracker;
+    private final SerializedColumnCache bytesCache;
     private int counter = 0;
     private long[] positionFilterBuffer = null;
 
     DirtyColumnBroadcaster(MinecraftServer server, Map<UUID, PlayerRequestState> players,
-                           ForgeOffThreadProcessor offThreadProcessor, DirtyColumnTracker dirtyTracker) {
+                           ForgeOffThreadProcessor offThreadProcessor, DirtyColumnTracker dirtyTracker,
+                           SerializedColumnCache bytesCache) {
         this.server = server;
         this.players = players;
         this.offThreadProcessor = offThreadProcessor;
         this.dirtyTracker = dirtyTracker;
+        this.bytesCache = bytesCache;
     }
 
     void tick(VSSServerConfig config) {
@@ -48,6 +52,12 @@ class DirtyColumnBroadcaster {
                 continue;
             }
             this.offThreadProcessor.invalidateTimestamps(dimensionStr, dirty);
+            // Belt-and-braces alongside the tracker's per-edit sink. That sink can lose a race: a
+            // serialization already in flight when the edit lands stores its (now stale) bytes *after* the
+            // invalidation removed them. Re-invalidating on this drain sweeps those up, which bounds worst-case
+            // staleness at dirtyBroadcastIntervalSeconds — exactly the freshness guarantee clients already get,
+            // since they cannot learn a column changed any sooner than this broadcast tells them.
+            this.bytesCache.invalidate(dimensionStr, dirty);
             int bufLen = Math.min(dirty.length, VSSConstants.MAX_DIRTY_COLUMN_POSITIONS);
             if (this.positionFilterBuffer == null || this.positionFilterBuffer.length < bufLen) {
                 this.positionFilterBuffer = new long[bufLen];

@@ -4,6 +4,7 @@ import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.voxel.ColumnTimestampCache;
+import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -18,14 +19,19 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    private static final int SHUTDOWN_JOIN_MS = 5000;
    private static final int EVICTION_INTERVAL_CYCLES = 1200;
    private static final int SAVE_INTERVAL_CYCLES = 6000;
+   /** Backlog cap for live serialization; past this, requests fall back to the disk path (never dropped). */
+   private static final int MAX_QUEUED_LIVE_SERIALIZE = 4096;
    private final Object snapshotLock = new Object();
    private TickSnapshot pendingSnapshot;
    private final ConcurrentLinkedQueue<SendAction> sendActions = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<OffThreadProcessor.GenerationTicketRequest> generationTicketRequests = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<OffThreadProcessor.TimestampInvalidation> timestampInvalidations = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<TickSnapshot.GenerationReadyData> droppedGenerationReady = new ConcurrentLinkedQueue<>();
+   private final ConcurrentLinkedQueue<UUID> droppedRemovedPlayers = new ConcurrentLinkedQueue<>();
+   private final ConcurrentLinkedQueue<OffThreadProcessor.LiveSerializeRequest> liveSerializeRequests = new ConcurrentLinkedQueue<>();
    private final Thread processingThread;
    private final ColumnTimestampCache timestampCache;
+   private final SerializedColumnCache bytesCache;
    private final Map<UUID, PlayerState> players;
    private final boolean diskReadingAvailable;
    private final boolean generationAvailable;
@@ -44,8 +50,10 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    });
 
    protected OffThreadProcessor(
-      Map<UUID, PlayerState> players, boolean diskReadingAvailable, boolean generationAvailable, Path dataDir, int perDimensionTimestampCacheSizeMB
+      Map<UUID, PlayerState> players, boolean diskReadingAvailable, boolean generationAvailable, Path dataDir, int perDimensionTimestampCacheSizeMB,
+      SerializedColumnCache bytesCache
    ) {
+      this.bytesCache = bytesCache;
       this.players = players;
       this.diskReadingAvailable = diskReadingAvailable;
       this.generationAvailable = generationAvailable;
@@ -55,7 +63,7 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
          this.timestampCache.load(dataDir);
       }
 
-      this.ctx = new ProcessingContext(this.sendActions, this.generationTicketRequests, new ProcessingDiagnostics(), new SequenceCounter());
+      this.ctx = new ProcessingContext(this.sendActions, this.generationTicketRequests, new ProcessingDiagnostics(), new SequenceCounter(), bytesCache);
       this.requestRouter = new IncomingRequestRouter<>(this.timestampCache, this.dedupTracker, diskReadingAvailable, generationAvailable, this.ctx);
       this.processingThread = new Thread(this::processingLoop, "VSS Processing Thread");
       this.processingThread.setDaemon(true);
@@ -69,9 +77,14 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    public void postSnapshot(TickSnapshot snapshot) {
       synchronized (this.snapshotLock) {
          if (this.pendingSnapshot != null) {
+            // The unconsumed snapshot is about to be discarded, so anything in it that owns resources has to
+            // be carried forward or it leaks. Generation slots hold a concurrency permit; removedPlayers holds
+            // DedupTracker groups and every syncOnLoad permit that player's in-flight requests acquired.
             for (TickSnapshot.GenerationReadyData genReady : this.pendingSnapshot.generationReady()) {
                this.droppedGenerationReady.add(genReady);
             }
+
+            this.droppedRemovedPlayers.addAll(this.pendingSnapshot.removedPlayers());
          }
 
          this.pendingSnapshot = snapshot;
@@ -85,6 +98,29 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
 
    public OffThreadProcessor.GenerationTicketRequest pollGenerationTicketRequest() {
       return this.generationTicketRequests.poll();
+   }
+
+   /**
+    * Drained by the server thread, which serializes the live chunk and publishes the bytes into the player's
+    * disk-result queue. Every entry already owns a syncOnLoad permit and a pendingByPosition slot, so the
+    * drain must produce exactly one result per entry (falling back to a disk read if the chunk is gone) —
+    * dropping one leaks the permit.
+    */
+   public OffThreadProcessor.LiveSerializeRequest pollLiveSerializeRequest() {
+      return this.liveSerializeRequests.poll();
+   }
+
+   private void requestLiveSerialize(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder) {
+      // Backlogged: the server thread is not keeping up with live serialization, so send this one down the
+      // disk path instead. Falling back rather than dropping is mandatory — the caller already acquired a
+      // syncOnLoad permit and registered a pending entry, and only a result releases them. Slightly staler
+      // bytes (last autosave) is the acceptable cost; a leaked permit is not.
+      if (this.liveSerializeRequests.size() >= MAX_QUEUED_LIVE_SERIALIZE) {
+         this.submitDiskRead(playerUuid, requestId, dimension, cx, cz, submissionOrder);
+         return;
+      }
+
+      this.liveSerializeRequests.add(new OffThreadProcessor.LiveSerializeRequest(playerUuid, requestId, dimension, cx, cz, submissionOrder));
    }
 
    public void invalidateTimestamps(String dimension, long[] positions) {
@@ -172,6 +208,9 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
          if (evicted > 0 && VSSLogger.isDebugEnabled()) {
             VSSLogger.debug("Evicted " + evicted + " oversized timestamp cache entries (" + this.timestampCache.size() + " remaining)");
          }
+
+         // Re-applies the byte budget so a config reduction takes effect; puts already evict inline.
+         this.bytesCache.evictIfOversized();
       }
 
       if (this.dataDir != null && ++this.saveCounter >= SAVE_INTERVAL_CYCLES) {
@@ -196,6 +235,11 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       OffThreadProcessor.TimestampInvalidation inv;
       while ((inv = this.timestampInvalidations.poll()) != null) {
          this.timestampCache.invalidate(inv.dimension(), inv.positions());
+      }
+
+      UUID droppedUuid;
+      while ((droppedUuid = this.droppedRemovedPlayers.poll()) != null) {
+         this.cleanupDedupGroups(this.dedupTracker.removePlayer(droppedUuid));
       }
 
       for (UUID removedUuid : snapshot.removedPlayers()) {
@@ -377,7 +421,7 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    }
 
    private void routeIncomingRequests(TickSnapshot snapshot) {
-      this.requestRouter.routeAll(snapshot, this.players, this::submitDiskRead, this::compressAndEnqueueLoaded, this.cycleNow);
+      this.requestRouter.routeAll(snapshot, this.players, this::submitDiskRead, this::requestLiveSerialize, this::buildAndEnqueueColumnPayload, this.cycleNow);
    }
 
    public ProcessingDiagnostics getDiagnostics() {
@@ -403,6 +447,9 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    }
 
    public record GenerationTicketRequest(UUID playerUuid, int requestId, int cx, int cz, long submissionOrder) {
+   }
+
+   public record LiveSerializeRequest(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder) {
    }
 
    private record TimestampInvalidation(String dimension, long[] positions) {

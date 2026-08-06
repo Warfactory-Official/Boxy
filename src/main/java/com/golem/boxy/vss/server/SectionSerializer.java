@@ -22,8 +22,23 @@ import java.util.Arrays;
  * The byte layout matches {@link NbtSectionSerializer} (disk path) and the client deserializer.
  */
 public final class SectionSerializer {
-    /** Shared all-zero reference for the vectorized empty-light check in {@link #hasNonZeroData}. */
+    /** Shared all-zero reference for the vectorized empty-light check in {@link #lightBytes}. */
     private static final byte[] ZERO_LIGHT = new byte[2048];
+
+    /**
+     * Pre-filled light arrays for uniform levels 1-15, indexed by light value (slot 0 is unused — an
+     * all-zero layer is reported as "no light" instead). Byte layout matches DataLayer's own nibble
+     * packing: both nibbles hold the level. Shared and never mutated; callers only read them into a buffer.
+     */
+    private static final byte[][] UNIFORM_LIGHT = new byte[16][];
+
+    static {
+        for (int level = 1; level < 16; level++) {
+            byte[] filled = new byte[2048];
+            Arrays.fill(filled, (byte) (level | level << 4));
+            UNIFORM_LIGHT[level] = filled;
+        }
+    }
 
     /**
      * Reusable per-thread serialization scratch. serializeColumn runs on the server main thread for every
@@ -52,10 +67,9 @@ public final class SectionSerializer {
             if (section != null) {
                 int sectionY = minSectionY + i;
                 SectionPos sectionPos = SectionPos.of(cx, sectionY, cz);
-                DataLayer blLayer = blockLightListener.getDataLayerData(sectionPos);
-                boolean hasBlockLight = blLayer != null && hasNonZeroData(blLayer);
-                if (!section.hasOnlyAir() || hasBlockLight) {
-                    includedSections.add(new SectionInfo(i, sectionY, sectionPos, blLayer, hasBlockLight));
+                byte[] blockLight = lightBytes(blockLightListener.getDataLayerData(sectionPos));
+                if (!section.hasOnlyAir() || blockLight != null) {
+                    includedSections.add(new SectionInfo(i, sectionY, sectionPos, blockLight));
                 }
             }
         }
@@ -73,32 +87,52 @@ public final class SectionSerializer {
             LevelChunkSection section = sections[info.index];
             buf.writeByte(info.sectionY);
             section.write(buf);
-            buf.writeBoolean(info.hasBlockLight);
-            if (info.hasBlockLight) {
-                buf.writeBytes(info.blLayer.getData());
+            buf.writeBoolean(info.blockLight != null);
+            if (info.blockLight != null) {
+                buf.writeBytes(info.blockLight);
             }
 
-            DataLayer slLayer = skyLightListener.getDataLayerData(info.sectionPos);
-            boolean hasSkyLight = slLayer != null && hasNonZeroData(slLayer);
-            buf.writeBoolean(hasSkyLight);
-            if (hasSkyLight) {
-                buf.writeBytes(slLayer.getData());
+            byte[] skyLight = lightBytes(skyLightListener.getDataLayerData(info.sectionPos));
+            buf.writeBoolean(skyLight != null);
+            if (skyLight != null) {
+                buf.writeBytes(skyLight);
             }
         }
 
         byte[] serialized = new byte[buf.readableBytes()];
         buf.readBytes(serialized);
-        includedSections.clear(); // drop DataLayer/SectionPos refs so the scratch list doesn't pin them
+        includedSections.clear(); // drop light/SectionPos refs so the scratch list doesn't pin them
         return new LoadedColumnData(cx, cz, serialized, serialized.length);
     }
 
-    private static boolean hasNonZeroData(DataLayer layer) {
+    /**
+     * The 2048 light bytes to send for {@code layer}, or null if it carries no light at all.
+     *
+     * <p>Deliberately avoids {@link DataLayer#getData()} on a homogenous layer. getData() lazily allocates a
+     * 2048-byte array and publishes it into the layer's own field — and DataLayers are owned by the light
+     * engine, which runs on a background executor, so calling it from the server thread is a write race on a
+     * shared object. Homogenous layers are not a corner case: sky-light sections above the terrain are stored
+     * uniform-15, so the old code did this for most columns. For those we hand back a shared pre-filled array
+     * with the identical byte layout, leaving the light engine's DataLayer untouched.
+     */
+    static byte[] lightBytes(DataLayer layer) {
+        if (layer == null || layer.isEmpty()) {
+            return null; // isEmpty() == "no backing array and default 0" — definitively dark, nothing allocated
+        }
+        if (layer.isDefinitelyHomogenous()) {
+            for (int level = 1; level < 16; level++) {
+                if (layer.isDefinitelyFilledWith(level)) {
+                    return UNIFORM_LIGHT[level];
+                }
+            }
+        }
+        // Heterogeneous: the backing array already exists, so getData() just returns it. Arrays.equals is a
+        // JIT-vectorized intrinsic, making the all-zero test far cheaper than a byte-by-byte scan. Light
+        // DataLayers are always 2048 bytes; a different length can't match ZERO_LIGHT and is treated as
+        // "has data" (safe — include, don't drop).
         byte[] data = layer.getData();
-        // Arrays.equals is a JIT-vectorized intrinsic, so the all-zero test (the common case for a section
-        // with no light) is far cheaper than a byte-by-byte scan. Light DataLayers are always 2048 bytes; a
-        // different length can't match ZERO_LIGHT and is treated as "has data" (safe — include, don't drop).
-        return data != null && !Arrays.equals(data, ZERO_LIGHT);
+        return data != null && !Arrays.equals(data, ZERO_LIGHT) ? data : null;
     }
 
-    private record SectionInfo(int index, int sectionY, SectionPos sectionPos, DataLayer blLayer, boolean hasBlockLight) {}
+    private record SectionInfo(int index, int sectionY, SectionPos sectionPos, byte[] blockLight) {}
 }

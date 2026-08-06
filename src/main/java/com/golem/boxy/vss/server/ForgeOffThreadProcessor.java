@@ -1,6 +1,7 @@
 package com.golem.boxy.vss.server;
 
 import com.golem.boxy.vss.common.processing.OffThreadProcessor;
+import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import com.golem.boxy.vss.payloads.VoxelColumnS2CPayload;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
@@ -30,8 +31,9 @@ public class ForgeOffThreadProcessor extends OffThreadProcessor<PlayerRequestSta
             ChunkDiskReader diskReader,
             ChunkGenerationService generationService,
             Path dataDir,
-            int perDimensionTimestampCacheSizeMB) {
-        super(players, diskReader != null, generationService != null, dataDir, perDimensionTimestampCacheSizeMB);
+            int perDimensionTimestampCacheSizeMB,
+            SerializedColumnCache bytesCache) {
+        super(players, diskReader != null, generationService != null, dataDir, perDimensionTimestampCacheSizeMB, bytesCache);
         this.diskReader = diskReader;
         this.generationService = generationService;
     }

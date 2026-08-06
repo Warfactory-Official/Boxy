@@ -1,7 +1,9 @@
 name: Build & Release
 
-# Builds Boxy's production jar on every push and PR (CI), and on a `v*` tag push it also
-# publishes a GitHub Release with the jar attached.
+# Builds Boxy's production jar on every push and PR (CI). On a `v*` tag push it publishes a
+# versioned GitHub Release. On a push to the default branch it republishes the rolling `latest`
+# release — same tag every time, moved to the new commit and marked as the latest release — so
+# /releases/latest/download/boxy-latest.jar always serves a build of the newest commit.
 #
 # Boxy compiles against Voxy's Mojmap "dev" jar, which is compile-only, is not published to any
 # Maven, and is deliberately not committed (see README.md -> Dependencies). This workflow builds
@@ -105,13 +107,22 @@ jobs:
         run: |
           set -euo pipefail
           ref="$GITHUB_REF"
+          default="refs/heads/${{ github.event.repository.default_branch }}"
           if [ "${ref#refs/tags/}" != "$ref" ]; then
             v="${ref#refs/tags/}"; v="${v#v}"   # strip refs/tags/ and a leading "v"
             echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "rolling=false" >> "$GITHUB_OUTPUT"
             echo "mod_version=$v" >> "$GITHUB_OUTPUT"
             echo "Release build, mod_version=$v"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$ref" = "$default" ]; then
+            # Rolling build. Restricted to the default branch on purpose: `latest` is a single tag,
+            # so letting every branch publish to it would mean whichever pushed last wins.
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "rolling=true" >> "$GITHUB_OUTPUT"
+            echo "Rolling 'latest' build from $ref"
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "rolling=false" >> "$GITHUB_OUTPUT"
             echo "CI build (no release)"
           fi
 
@@ -184,3 +195,21 @@ jobs:
           generate_release_notes: true
           # Treat semver pre-release tags (containing a hyphen, e.g. v1.0.0-alpha) as pre-releases.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      # Rolling release: delete the previous "latest" release + tag (no-op on first run), then
+      # recreate it pointing at this commit with the fresh jar. Deleting first guarantees the new
+      # jar replaces the preceding one rather than assets accumulating, and --cleanup-tag is what
+      # repoints the tag — updating a release in place would leave its tag on the old commit.
+      - name: Publish rolling "latest" release
+        if: steps.version.outputs.rolling == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fixed filename so /releases/latest/download/boxy-latest.jar is a permanent link.
+          cp "release/${{ steps.collect.outputs.jar_name }}" boxy-latest.jar
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest boxy-latest.jar \
+            --title "Latest build (${GITHUB_SHA::7})" \
+            --notes "Automated build of \`${{ github.event.repository.default_branch }}\` @ ${GITHUB_SHA}" \
+            --latest

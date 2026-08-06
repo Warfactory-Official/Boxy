@@ -16,7 +16,18 @@ public class DirtyColumnTracker {
    private String lastDimension;
    private long lastPacked = Long.MIN_VALUE; // sentinel: unreachable for real chunk coords
 
+   // Notified the first time a column is marked dirty in each drain window. This is the precise invalidation
+   // edge for the serialized-bytes cache: the periodic broadcast alone would leave bytes up to
+   // dirtyBroadcastIntervalSeconds stale for a client that re-requests for an unrelated reason (a fresh join,
+   // or LOD re-entry after client-side eviction) rather than because it saw the dirty broadcast.
+   private volatile DirtyColumnTracker.ColumnInvalidationSink invalidationSink;
+
    public DirtyColumnTracker() {
+   }
+
+   /** Set once during startup, before any player can be marking columns dirty. */
+   public void setInvalidationSink(DirtyColumnTracker.ColumnInvalidationSink sink) {
+      this.invalidationSink = sink;
    }
 
    public void markDirty(String dimension, int cx, int cz) {
@@ -29,6 +40,18 @@ public class DirtyColumnTracker {
          this.lastPacked = packed;
          this.lastDimension = dimension;
       }
+
+      // Past the memo, so this fires at most once per column per drain window — sendBlockUpdated is far too
+      // hot to hang a cache eviction off unconditionally.
+      DirtyColumnTracker.ColumnInvalidationSink sink = this.invalidationSink;
+      if (sink != null) {
+         sink.onColumnDirty(dimension, packed);
+      }
+   }
+
+   @FunctionalInterface
+   public interface ColumnInvalidationSink {
+      void onColumnDirty(String dimension, long packed);
    }
 
    public synchronized long[] drainDirty(String dimension) {

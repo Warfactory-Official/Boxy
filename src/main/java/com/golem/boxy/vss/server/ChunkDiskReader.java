@@ -1,9 +1,11 @@
 package com.golem.boxy.vss.server;
 
+import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.processing.AbstractChunkDiskReader;
 import com.golem.boxy.vss.common.processing.ReadResultAccess;
+import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ChunkMap;
@@ -29,8 +31,24 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
         return new ReadResult(playerUuid, requestId, chunkX, chunkZ, null, null, 0, 0L, false, true, submissionOrder);
     }
 
-    public ChunkDiskReader(int threadCount) {
+    /**
+     * A result for a column serialized from the live world rather than read from disk. Shaped exactly like a
+     * successful disk read so it flows through the same drain (permit release, dedup dispatch, timestamp
+     * cache, payload build). {@code sectionBytes == null} means the column had nothing worth sending, which
+     * the drain turns into ColumnUpToDate — the same outcome the old inline path produced.
+     */
+    static ReadResult liveResult(UUID playerUuid, int requestId, int chunkX, int chunkZ, String dimension,
+                                 byte[] sectionBytes, long columnTimestamp, long submissionOrder) {
+        int estimatedBytes = sectionBytes == null ? 0 : sectionBytes.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES;
+        return new ReadResult(playerUuid, requestId, chunkX, chunkZ, sectionBytes, dimension, estimatedBytes,
+                columnTimestamp, false, false, submissionOrder);
+    }
+
+    private final SerializedColumnCache bytesCache;
+
+    public ChunkDiskReader(int threadCount, SerializedColumnCache bytesCache) {
         super(threadCount);
+        this.bytesCache = bytesCache;
     }
 
     public void submitReadDirect(UUID playerUuid, int requestId, ServerLevel level, int chunkX, int chunkZ, long submissionOrder) {
@@ -72,6 +90,20 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
             return;
         }
         long startNs = System.nanoTime();
+        String cacheDimension = dimension.location().toString();
+        long packed = PositionUtil.packPosition(chunkX, chunkZ);
+
+        // The expensive part of this method is a region-file read plus a full NBT parse and PalettedContainer
+        // codec decode, repeated in full for every player who asks. DedupTracker only collapses requests that
+        // overlap in time; this also catches the player who arrives thirty seconds later.
+        byte[] cached = this.bytesCache.get(cacheDimension, packed);
+        if (cached != null) {
+            this.diag.recordCompleted(System.nanoTime() - startNs);
+            this.addResult(playerUuid, liveResult(playerUuid, requestId, chunkX, chunkZ, cacheDimension,
+                    cached, VSSConstants.epochSeconds(), submissionOrder));
+            return;
+        }
+
         byte[] serializedSections;
         try {
             serializedSections = NbtSectionSerializer.readAndSerializeSections(chunkMap, registryAccess, chunkX, chunkZ);
@@ -89,16 +121,17 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
             this.addResult(playerUuid, emptyResult(playerUuid, requestId, chunkX, chunkZ, submissionOrder));
         } else if (serializedSections.length == 0) {
             long columnTimestamp = VSSConstants.epochSeconds();
-            String dimensionStr = dimension.location().toString();
+            String dimensionStr = cacheDimension;
             this.diag.recordEmpty();
             this.diag.recordCompleted(System.nanoTime() - startNs);
             this.addResult(playerUuid, new ReadResult(playerUuid, requestId, chunkX, chunkZ, null, dimensionStr, 0, columnTimestamp, false, false, submissionOrder));
         } else {
             long columnTimestamp = VSSConstants.epochSeconds();
-            String dimensionStr = dimension.location().toString();
             int estimatedBytes = serializedSections.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES;
             this.diag.recordCompleted(System.nanoTime() - startNs);
-            this.addResult(playerUuid, new ReadResult(playerUuid, requestId, chunkX, chunkZ, serializedSections, dimensionStr, estimatedBytes, columnTimestamp, false, false, submissionOrder));
+            // Shared from here on, never mutated — the dedup dispatch already hands one array to N players.
+            this.bytesCache.put(cacheDimension, packed, serializedSections);
+            this.addResult(playerUuid, new ReadResult(playerUuid, requestId, chunkX, chunkZ, serializedSections, cacheDimension, estimatedBytes, columnTimestamp, false, false, submissionOrder));
         }
     }
 

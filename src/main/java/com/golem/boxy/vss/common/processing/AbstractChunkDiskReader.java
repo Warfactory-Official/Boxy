@@ -44,6 +44,15 @@ public abstract class AbstractChunkDiskReader<R extends ReadResultAccess> {
       }
    }
 
+   /**
+    * Publishes a result produced outside this reader's own thread pool — currently live in-memory column
+    * serialization, which reaches the same drain so that it shares the pending/dedup/permit bookkeeping.
+    * The queues are concurrent, so any thread may call this.
+    */
+   public void publishResult(UUID playerUuid, R result) {
+      this.addResult(playerUuid, result);
+   }
+
    public ConcurrentLinkedQueue<R> getPlayerQueue(UUID playerUuid) {
       return this.playerResults.get(playerUuid);
    }
