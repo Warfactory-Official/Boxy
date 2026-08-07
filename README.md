@@ -16,7 +16,7 @@ the same on NeoForge.
 
 ## Features
 
-- **Loads unmodified Voxy on Forge 1.20.1** — a load-time Fabric→Forge shim scoped to a single mod
+- **Loads unmodified Voxy on Forge 1.20.1** - a load-time Fabric→Forge shim scoped to a single mod
   (essentially a tiny, Voxy-specific [Sinytra Connector](https://github.com/Sinytra/Connector)).
 - **Voxy Server Side (VSS)** — a from-scratch port of the server→client LOD-streaming protocol: a
   Forge server streams distant terrain LODs to clients, so players see far terrain the server holds —
