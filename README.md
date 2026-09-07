@@ -37,6 +37,16 @@ Configuration files remain `config/vss-client-config.json` and `config/vss-serve
 
 This is a clean protocol break from Forge Boxy and original Voxy Server Side. Old worlds and caches are **not deleted or converted**. Back up worlds before any Minecraft version upgrade; use separate Voxy storage when moving from 1.20.1.
 
+### Voxy Dependency Bootstrap
+
+On a client launch, Boxy runs a ModLauncher early service before NeoForge validates the mod list. If no valid Voxy jar is already present in the instance `mods` folder, it downloads the official Voxy release into that folder using an atomic temporary file. A small `Setting up dependencies` window shows progress when a graphical desktop is available; headless/server launches log progress and do not download the client-only dependency. The launcher then discovers Voxy during the same startup.
+
+The download source is the official release URL:
+
+`https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.15-beta+1.21.1-neoforge.jar`
+
+If the download fails or the result is not a valid Voxy NeoForge jar, startup stops before Boxy can enter a broken state. Users may also install Voxy manually; an existing valid Voxy jar is reused.
+
 ## Build
 
 Use JDK 21. Supply the native Voxy jar in `libs/voxy-0.2.15-beta+1.21.1-neoforge.jar`, or point `-Pvoxy_jar` to it:

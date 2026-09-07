@@ -8,7 +8,8 @@ group = mod_group_id
 base.archivesName = mod_id
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 def smokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
-        (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client')
+        (providers.gradleProperty('downloader_smoke').isPresent() ? 'run/downloader-smoke' :
+        (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client'))
 def smokeWorldName = providers.gradleProperty('stability_world_source').isPresent() ? 'boxy-stability-snapshot' : 'boxy-migration-smoke'
 
 repositories {
@@ -104,7 +105,9 @@ tasks.register('verifyProductionJar') {
             zip.entries().each { entry ->
                 if (entry.name.startsWith('me/cortex/voxy/') || entry.name.startsWith('net/fabricmc/')
                         || entry.name.startsWith('com/golem/boxy/loader/') || entry.name.startsWith('com/golem/boxy/libs/')
-                        || entry.name.startsWith('com/golem/boxy/smoke/') || entry.name.startsWith('META-INF/services/')
+                        || entry.name.startsWith('com/golem/boxy/smoke/')
+                        || (!entry.directory && entry.name.startsWith('META-INF/services/')
+                        && entry.name != 'META-INF/services/cpw.mods.modlauncher.api.ITransformationService')
                         || entry.name.endsWith('.libzip') || entry.name == 'fabric-mixin.jar') {
                     throw new GradleException("Unexpected bundled code: ${entry.name}")
                 }
@@ -143,7 +146,13 @@ if (providers.gradleProperty('smoke').isPresent()) {
         boxy_smoke { sourceSet sourceSets.smoke }
     }
     tasks.register('stageSmokeClientMods', Copy) {
+        if (providers.gradleProperty('downloader_smoke').isPresent()) {
+            doFirst { delete file("${smokeClientDirectory}/mods") }
+        }
         from configurations.nativeClientMods
+        if (providers.gradleProperty('downloader_smoke').isPresent()) {
+            exclude { it.file.name.toLowerCase(Locale.ROOT).contains('voxy') }
+        }
         if (providers.gradleProperty('hbm_smoke').isPresent()) {
             from file(providers.gradleProperty('hbm_jar').get())
             from file(providers.gradleProperty('golemcore_jar').get())
