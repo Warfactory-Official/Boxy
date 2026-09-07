@@ -9,7 +9,7 @@ import net.minecraft.world.level.chunk.PalettedContainer;
  *
  * <p><b>Exactly one thread may ever touch a given instance after it is handed off.</b> The block-state
  * containers are real {@link PalettedContainer}s and {@code write()} takes their ThreadingDetector, which in
- * 1.20.1 is always armed — two threads writing the same snapshot is a ReportedException, not a silent race.
+ * Minecraft is armed here: two threads writing the same snapshot is a ReportedException, not a silent race.
  * Create it, submit it to one task, serialize it, drop it. In particular never cache one: caches hold
  * {@code byte[]}, which is immutable by convention here and safe to share.
  *

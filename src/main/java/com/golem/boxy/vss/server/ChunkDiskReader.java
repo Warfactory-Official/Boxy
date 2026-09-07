@@ -7,145 +7,110 @@ import com.golem.boxy.vss.common.processing.AbstractChunkDiskReader;
 import com.golem.boxy.vss.common.processing.ReadResultAccess;
 import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import net.minecraft.core.RegistryAccess;
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.Level;
 
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.RejectedExecutionException;
 
-/**
- * Off-thread chunk NBT reader: reads already-generated chunks straight from the region files (never
- * loading them into the live world) on a small thread pool, and serializes them via
- * {@link NbtSectionSerializer}. {@code ServerChunkCache.chunkMap} is public in 1.20.1, so no accessor is
- * needed for it; the protected {@code read(ChunkPos)} is reached through {@code AccessorChunkMap}.
- */
+/** Region reads without loading chunks. Every worker captures the result queue of its original session. */
 public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.ReadResult> {
-
-    static ReadResult emptyResult(UUID playerUuid, int requestId, int chunkX, int chunkZ, long submissionOrder) {
-        return new ReadResult(playerUuid, requestId, chunkX, chunkZ, null, null, 0, 0L, true, false, submissionOrder);
+    static ReadResult emptyResult(UUID player, int id, int x, int z, long order) {
+        return new ReadResult(player, id, x, z, null, null, 0, 0, true, false, order);
     }
 
-    static ReadResult saturatedResult(UUID playerUuid, int requestId, int chunkX, int chunkZ, long submissionOrder) {
-        return new ReadResult(playerUuid, requestId, chunkX, chunkZ, null, null, 0, 0L, false, true, submissionOrder);
+    static ReadResult saturatedResult(UUID player, int id, int x, int z, long order) {
+        return new ReadResult(player, id, x, z, null, null, 0, 0, false, true, order);
     }
 
-    /**
-     * A result for a column serialized from the live world rather than read from disk. Shaped exactly like a
-     * successful disk read so it flows through the same drain (permit release, dedup dispatch, timestamp
-     * cache, payload build). {@code sectionBytes == null} means the column had nothing worth sending, which
-     * the drain turns into ColumnUpToDate — the same outcome the old inline path produced.
-     */
-    static ReadResult liveResult(UUID playerUuid, int requestId, int chunkX, int chunkZ, String dimension,
-                                 byte[] sectionBytes, long columnTimestamp, long submissionOrder) {
-        int estimatedBytes = sectionBytes == null ? 0 : sectionBytes.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES;
-        return new ReadResult(playerUuid, requestId, chunkX, chunkZ, sectionBytes, dimension, estimatedBytes,
-                columnTimestamp, false, false, submissionOrder);
+    static ReadResult liveResult(UUID player, int id, int x, int z, String dimension,
+            byte[] bytes, long timestamp, long order) {
+        int size = bytes == null ? 0 : bytes.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES;
+        return new ReadResult(player, id, x, z, bytes, dimension, size, timestamp, false, false, order);
     }
 
     private final SerializedColumnCache bytesCache;
+    private record FreshKey(UUID player, int requestId) {}
+    private final java.util.concurrent.ConcurrentHashMap<FreshKey, Object> freshReads = new java.util.concurrent.ConcurrentHashMap<>();
+
+    void cancelFresh(UUID player, int requestId) {
+        if (requestId == -1) freshReads.keySet().removeIf(key -> key.player().equals(player));
+        else freshReads.remove(new FreshKey(player, requestId));
+    }
+    private java.util.function.BiConsumer<ServerLevel, com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest> dirtyReload;
+
+    void setDirtyReload(java.util.function.BiConsumer<ServerLevel, com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest> reload) {
+        this.dirtyReload = reload;
+    }
 
     public ChunkDiskReader(int threadCount, SerializedColumnCache bytesCache) {
         super(threadCount);
         this.bytesCache = bytesCache;
     }
 
-    public void submitReadDirect(UUID playerUuid, int requestId, ServerLevel level, int chunkX, int chunkZ, long submissionOrder) {
-        if (this.isShutdown()) {
-            return;
-        }
-        this.diag.recordSubmitted();
-        ResourceKey<Level> dimension = level.dimension();
-        RegistryAccess registryAccess = level.registryAccess();
+    public void submitReadDirect(UUID player, int id, ServerLevel level, int x, int z, long order, boolean forceFresh) {
+        if (isShutdown()) return;
+        ConcurrentLinkedQueue<ReadResult> results = getPlayerQueue(player);
+        if (results == null) return;
+        diag.recordSubmitted();
+        RegistryAccess registries = level.registryAccess();
         ChunkMap chunkMap = level.getChunkSource().chunkMap;
-
+        String dimension = level.dimension().location().toString();
+        Object token = new Object();
+        FreshKey key = new FreshKey(player, id);
+        if (forceFresh) freshReads.put(key, token);
         try {
-            this.executor.submit(() -> {
-                if (!this.isShutdown()) {
-                    try {
-                        this.readChunkNbtAndSerialize(playerUuid, requestId, chunkMap, chunkX, chunkZ, dimension, registryAccess, submissionOrder);
-                    } catch (Exception e) {
-                        VSSLogger.error("Failed to read chunk from disk at " + chunkX + ", " + chunkZ, e);
-                        this.diag.recordError();
-                        this.diag.recordCompleted(0L);
-                        this.addResult(playerUuid, emptyResult(playerUuid, requestId, chunkX, chunkZ, submissionOrder));
-                    }
-                }
-            });
+            executor.submit(() -> readAndSerialize(player, id, chunkMap, registries, dimension, x, z, order, results, forceFresh, level, token));
         } catch (RejectedExecutionException rejected) {
-            if (VSSLogger.isDebugEnabled()) {
-                VSSLogger.debug("Disk reader executor saturated, returning rate-limited for " + chunkX + "," + chunkZ);
-            }
-            this.diag.recordSaturation();
-            this.diag.recordCompleted(0L);
-            this.addResult(playerUuid, saturatedResult(playerUuid, requestId, chunkX, chunkZ, submissionOrder));
+            freshReads.remove(key, token);
+            diag.recordSaturation();
+            diag.recordCompleted(0);
+            results.add(saturatedResult(player, id, x, z, order));
         }
     }
 
-    private void readChunkNbtAndSerialize(
-            UUID playerUuid, int requestId, ChunkMap chunkMap, int chunkX, int chunkZ,
-            ResourceKey<Level> dimension, RegistryAccess registryAccess, long submissionOrder) {
-        if (this.isShutdown()) {
-            return;
-        }
-        long startNs = System.nanoTime();
-        String cacheDimension = dimension.location().toString();
-        long packed = PositionUtil.packPosition(chunkX, chunkZ);
-
-        // The expensive part of this method is a region-file read plus a full NBT parse and PalettedContainer
-        // codec decode, repeated in full for every player who asks. DedupTracker only collapses requests that
-        // overlap in time; this also catches the player who arrives thirty seconds later.
-        byte[] cached = this.bytesCache.get(cacheDimension, packed);
-        if (cached != null) {
-            this.diag.recordCompleted(System.nanoTime() - startNs);
-            this.addResult(playerUuid, liveResult(playerUuid, requestId, chunkX, chunkZ, cacheDimension,
-                    cached, VSSConstants.epochSeconds(), submissionOrder));
-            return;
-        }
-
-        byte[] serializedSections;
+    private void readAndSerialize(UUID player, int id, ChunkMap map, RegistryAccess registries,
+            String dimension, int x, int z, long order, ConcurrentLinkedQueue<ReadResult> results, boolean forceFresh, ServerLevel level, Object token) {
+        if (isShutdown()) return;
+        long start = System.nanoTime();
+        boolean scheduledReload = false;
         try {
-            serializedSections = NbtSectionSerializer.readAndSerializeSections(chunkMap, registryAccess, chunkX, chunkZ);
+            long position = PositionUtil.packPosition(x, z);
+            byte[] bytes = forceFresh ? null : bytesCache.get(dimension, position);
+            if (bytes == null) {
+                bytes = NbtSectionSerializer.readAndSerializeSections(map, registries, x, z);
+                if (bytes != null && !forceFresh) bytesCache.put(dimension, position, bytes);
+            }
+            if (bytes == null) {
+                diag.recordEmpty();
+                results.add(forceFresh ? saturatedResult(player, id, x, z, order) : emptyResult(player, id, x, z, order));
+            } else if (forceFresh) {
+                // The disk copy proves existence, not freshness. Reacquire FULL and snapshot live terrain.
+                var request = new com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest(player, id, dimension, x, z, order);
+                level.getServer().execute(() -> {
+                    boolean active = freshReads.remove(new FreshKey(player, id), token);
+                    if (!isShutdown() && getPlayerQueue(player) == results) {
+                        if (active) dirtyReload.accept(level, request);
+                        else results.add(saturatedResult(player, id, x, z, order));
+                    }
+                });
+                scheduledReload = true;
+            } else {
+                if (bytes.length == 0) diag.recordEmpty();
+                results.add(liveResult(player, id, x, z, dimension, bytes, VSSConstants.epochSeconds(), order));
+            }
         } catch (Exception e) {
-            VSSLogger.error("Failed to read chunk NBT from disk at " + chunkX + ", " + chunkZ, e);
-            this.diag.recordError();
-            this.diag.recordCompleted(System.nanoTime() - startNs);
-            this.addResult(playerUuid, emptyResult(playerUuid, requestId, chunkX, chunkZ, submissionOrder));
-            return;
-        }
-
-        if (serializedSections == null) {
-            this.diag.recordEmpty();
-            this.diag.recordCompleted(System.nanoTime() - startNs);
-            this.addResult(playerUuid, emptyResult(playerUuid, requestId, chunkX, chunkZ, submissionOrder));
-        } else if (serializedSections.length == 0) {
-            long columnTimestamp = VSSConstants.epochSeconds();
-            String dimensionStr = cacheDimension;
-            this.diag.recordEmpty();
-            this.diag.recordCompleted(System.nanoTime() - startNs);
-            this.addResult(playerUuid, new ReadResult(playerUuid, requestId, chunkX, chunkZ, null, dimensionStr, 0, columnTimestamp, false, false, submissionOrder));
-        } else {
-            long columnTimestamp = VSSConstants.epochSeconds();
-            int estimatedBytes = serializedSections.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES;
-            this.diag.recordCompleted(System.nanoTime() - startNs);
-            // Shared from here on, never mutated — the dedup dispatch already hands one array to N players.
-            this.bytesCache.put(cacheDimension, packed, serializedSections);
-            this.addResult(playerUuid, new ReadResult(playerUuid, requestId, chunkX, chunkZ, serializedSections, cacheDimension, estimatedBytes, columnTimestamp, false, false, submissionOrder));
+            diag.recordError();
+            VSSLogger.error("Failed to read chunk from disk at " + x + ", " + z, e);
+            results.add(saturatedResult(player, id, x, z, order));
+        } finally {
+            if (!scheduledReload) freshReads.remove(new FreshKey(player, id), token);
+            diag.recordCompleted(System.nanoTime() - start);
         }
     }
 
-    public record ReadResult(
-            UUID playerUuid,
-            int requestId,
-            int chunkX,
-            int chunkZ,
-            byte[] sectionBytes,
-            String dimension,
-            int estimatedBytes,
-            long columnTimestamp,
-            boolean notFound,
-            boolean saturated,
-            long submissionOrder) implements ReadResultAccess {
-    }
+    public record ReadResult(UUID playerUuid, int requestId, int chunkX, int chunkZ, byte[] sectionBytes,
+            String dimension, int estimatedBytes, long columnTimestamp, boolean notFound, boolean saturated,
+            long submissionOrder) implements ReadResultAccess {}
 }

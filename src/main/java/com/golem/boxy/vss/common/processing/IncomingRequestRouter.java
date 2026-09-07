@@ -100,7 +100,7 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
          AbstractPlayerRequestState.QueuedRequest queued = queue.peek();
          IncomingRequest req = queued.request();
          long packed = PositionUtil.packPosition(req.cx(), req.cz());
-         if (state.hasDiskReadDone(req.cx(), req.cz())) {
+          if (req.clientTimestamp() > 0L && state.hasDiskReadDone(req.cx(), req.cz())) {
             queue.poll();
             this.ctx.sendActions().add(new SendAction.ColumnUpToDate(playerUuid, req.requestId()));
          } else if (this.resolvedFromTimestamp(state, playerUuid, req, packed, dimension)) {
@@ -120,7 +120,7 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
    }
 
    private boolean resolvedAsDuplicate(PS state, UUID playerUuid, IncomingRequest req) {
-      if (state.hasDiskReadDone(req.cx(), req.cz())) {
+       if (req.clientTimestamp() > 0L && state.hasDiskReadDone(req.cx(), req.cz())) {
          this.ctx.sendActions().add(new SendAction.ColumnUpToDate(playerUuid, req.requestId()));
          return true;
       } else if (state.hasPendingRequest(req.cx(), req.cz())) {
@@ -207,9 +207,8 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
          return false;
       }
 
-      // Cache hit: the bytes already exist, so serve synchronously and skip the round trip entirely — no
-      // permit, no pending entry, nothing to release, and none of the ~2-tick deferral.
-      byte[] cached = this.ctx.bytesCache().get(dimension, packed);
+       // Forced refreshes must take a new snapshot: pre-edit work can repopulate the byte cache after invalidation.
+       byte[] cached = req.clientTimestamp() > 0L ? this.ctx.bytesCache().get(dimension, packed) : null;
       if (cached != null) {
          payloadEnqueuer.enqueue(state, req.cx(), req.cz(), dimension, req.requestId(), cycleNow, this.ctx.sequence().next(),
             cached, cached.length + VSSConstants.ESTIMATED_COLUMN_OVERHEAD_BYTES);
@@ -224,8 +223,8 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       } else {
          long order = this.ctx.sequence().next();
          state.addPendingRequest(new PendingRequest(req.requestId(), req.cx(), req.cz(), RequestType.SYNC));
-         // Attached: another player already asked for this column and will get the bytes dispatched to both.
-         if (!this.dedupTracker.tryAttachOrCreate(packed, dimension, playerUuid, req.requestId(), order)) {
+          // Do not attach a forced refresh to another player's potentially pre-edit snapshot.
+          if (req.clientTimestamp() <= 0L || !this.dedupTracker.tryAttachOrCreate(packed, dimension, playerUuid, req.requestId(), order)) {
             liveColumnRouter.requestLiveSerialize(playerUuid, req.requestId(), dimension, req.cx(), req.cz(), order);
          }
 
@@ -263,15 +262,17 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
       long order = this.ctx.sequence().next();
       if (type == RequestType.SYNC || this.diskReadingAvailable) {
          state.addPendingRequest(new PendingRequest(req.requestId(), req.cx(), req.cz(), type));
-         boolean attached = this.dedupTracker.tryAttachOrCreate(packed, dimension, playerUuid, req.requestId(), order);
+          boolean attached = req.clientTimestamp() > 0L
+                && this.dedupTracker.tryAttachOrCreate(packed, dimension, playerUuid, req.requestId(), order);
          if (!attached) {
-            diskReadSubmitter.submit(playerUuid, req.requestId(), dimension, req.cx(), req.cz(), order);
+             diskReadSubmitter.submit(playerUuid, req.requestId(), dimension, req.cx(), req.cz(), order,
+                   req.clientTimestamp() == VSSConstants.DIRTY_REFRESH_TIMESTAMP);
          }
 
          this.ctx.diagnostics().incrementDiskQueued();
       } else if (type == RequestType.GENERATION && this.generationAvailable) {
          state.addPendingRequest(new PendingRequest(req.requestId(), req.cx(), req.cz(), type));
-         this.ctx.generationTicketRequests().add(new OffThreadProcessor.GenerationTicketRequest(playerUuid, req.requestId(), req.cx(), req.cz(), order));
+         this.ctx.generationTicketRequests().add(new OffThreadProcessor.GenerationTicketRequest(playerUuid, req.requestId(), req.cx(), req.cz(), order, dimension));
       } else {
          this.ctx.sendActions().add(new SendAction.ColumnNotGenerated(playerUuid, req.requestId()));
          limiter.release();
@@ -280,7 +281,7 @@ class IncomingRequestRouter<PS extends PlayerStateAccess> {
 
    @FunctionalInterface
    interface DiskReadSubmitter {
-      void submit(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder);
+       void submit(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder, boolean forceFresh);
    }
 
    /**

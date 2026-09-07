@@ -1,6 +1,5 @@
 package com.golem.boxy.vss.mixin;
 
-import com.golem.boxy.vss.config.VSSClientConfig;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
@@ -8,7 +7,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
-import java.util.Arrays;
 
 /**
  * Fixes fully-lit terrain being ingested pitch black, which is why LODs built while you play look broken
@@ -46,8 +44,7 @@ import java.util.Arrays;
  * first, {@code slp} second); if that ever drifted, the "only when the sample is 15" guard makes the
  * mixin a no-op rather than a hazard, since a whole section uniformly at block light 15 does not occur.
  *
- * <p>Targeted by string ({@code remap = false}, Voxy class) with a hand-written SRG selector
- * ({@code m_8079_} = {@code LayerLightEventListener.getDataLayerData}, §7.5); {@code require = 0} so it
+ * <p>Targeted by string ({@code remap = false}, Voxy class); {@code require = 0} so it
  * degrades to Voxy's original behaviour if the method shape changes. The handler is an instance method to
  * match {@code enqueueIngest} (§7.7).
  */
@@ -57,35 +54,10 @@ public class MixinVoxyIngestUniformSkyLight {
     @Redirect(method = "enqueueIngest",
               at = @At(value = "INVOKE",
                        target = "Lnet/minecraft/world/level/lighting/LayerLightEventListener;"
-                              + "m_8079_(Lnet/minecraft/core/SectionPos;)Lnet/minecraft/world/level/chunk/DataLayer;",
+                               + "getDataLayerData(Lnet/minecraft/core/SectionPos;)Lnet/minecraft/world/level/chunk/DataLayer;",
                        ordinal = 1),
               require = 0)
     private DataLayer boxy$skyLightOrUniform(LayerLightEventListener listener, SectionPos pos) {
-        DataLayer layer = listener.getDataLayerData(pos);
-        if (layer != null && !layer.isEmpty()) {
-            return layer;
-        }
-        if (!VSSClientConfig.CONFIG.fillUniformSkyLight) {
-            return layer;
-        }
-
-        int minX = pos.minBlockX(), minY = pos.minBlockY(), minZ = pos.minBlockZ();
-        int best = 0;
-        for (int dx = 0; dx <= 15 && best < 15; dx += 15) {
-            for (int dy = 0; dy <= 15 && best < 15; dy += 15) {
-                for (int dz = 0; dz <= 15 && best < 15; dz += 15) {
-                    best = Math.max(best, listener.getLightValue(
-                            new net.minecraft.core.BlockPos(minX + dx, minY + dy, minZ + dz)));
-                }
-            }
-        }
-
-        if (best < 15) {
-            return layer; // genuinely dark (or partially lit) — leave Voxy's behaviour alone
-        }
-
-        byte[] data = new byte[2048]; // DataLayer packs two 4-bit values per byte
-        Arrays.fill(data, (byte) ((15 << 4) | 15));
-        return new DataLayer(data);
+        return com.golem.boxy.vss.client.IngestLighting.skyLight(listener, pos);
     }
 }

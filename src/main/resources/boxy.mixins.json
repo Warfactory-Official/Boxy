@@ -1,0 +1,33 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.golem.boxy.vss.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixins": [
+    "AccessorChunkMap",
+    "AccessorLevelChunkSection",
+    "ChunkMapSaveHook",
+    "MixinChunkLiveDirty",
+    "MixinHbmChunkCarver",
+    "MixinChunkMapTrackedEntity",
+    "MixinServerLevelLiveDirty"
+  ],
+  "client": [
+    "AccessorClientLevel",
+    "MixinClientPacketListenerServerPos",
+    "MixinClientEntityLightUpdates",
+    "MixinEntityForeignTickGuard",
+    "MixinEntityRenderDistance",
+    "MixinVoxyEffectFog",
+    "MixinVoxyLodDepthCapture",
+    "MixinVoxyStencilMaskFix",
+    "MixinVoxyHiZConservative",
+    "MixinVoxyMapperBiomeCache",
+    "MixinVoxyMipperLodLight",
+    "MixinVoxyIngestUniformSkyLight",
+    "MixinLevelRendererDistantEntities"
+  ]
+}

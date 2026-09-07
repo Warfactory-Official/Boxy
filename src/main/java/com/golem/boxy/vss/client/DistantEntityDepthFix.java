@@ -7,6 +7,7 @@ import com.golem.boxy.vss.config.VSSClientConfig;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -21,9 +22,6 @@ import net.minecraft.world.entity.Entity;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 
 /**
  * Fixes distant-entity z-fighting by <b>re-banding the depth buffer around each tracked entity</b>.
@@ -33,7 +31,7 @@ import java.lang.invoke.MethodType;
  * range: at 512 blocks one depth step spans ~0.3 blocks, far coarser than the 0.03–0.06-block gaps between a
  * model's overlapping layers (skin overlays, armor, vehicle panels). Layer pairs land on the same or randomly
  * adjacent depth values and shimmer as the camera moves. No global remedy fits this stack (reversed-Z /
- * float depth can't be retrofitted under MC + Voxy + Embeddium — §17 of the developer guide).
+ * float depth cannot simply be imposed on every vanilla and shaderpack pass).
  *
  * <p><b>The fix.</b> A distant entity only occupies a tiny slice of eye-space depth,
  * {@code [zc - slab, zc + slab]}. So its draws are diverted into a private immediate buffer and flushed with:
@@ -73,7 +71,7 @@ import java.lang.invoke.MethodType;
  * use <b>raw GL</b> deliberately: {@code GlStateManager}'s cache still believes the steady-state values, so
  * the RenderType shards' redundant state sets are skipped and the overrides survive the flush.
  *
- * <p><b>Shaderpacks (Oculus/Iris).</b> The re-band also applies under an active shaderpack: Iris's patched
+ * <p><b>Shaderpacks (Iris).</b> The re-band also applies under an active shaderpack: Iris's patched
  * gbuffer entity programs are {@code ShaderInstance}s whose {@code ProjMat} uniform is uploaded per draw from
  * the <b>live</b> {@code RenderSystem} projection, so the z-row swap reaches them, and written depth values
  * remain valid points on the global depth curve (composite passes that reconstruct position from depth stay
@@ -101,13 +99,14 @@ public final class DistantEntityDepthFix {
     private static final int STENCIL_BIT = 0x80;
 
     /** Private immediate buffer so a re-banded entity's draws never mix into the frame's shared batches. */
-    private static final MultiBufferSource.BufferSource BUFFER = MultiBufferSource.immediate(new BufferBuilder(1536));
+    private static ByteBufferBuilder backingBuffer = new ByteBufferBuilder(1536);
+    private static MultiBufferSource.BufferSource BUFFER = MultiBufferSource.immediate(backingBuffer);
 
     private static final Matrix4f SHARP_PROJ = new Matrix4f(); // render-thread scratch
     private static final Matrix4f QUAD_PROJ = new Matrix4f();  // render-thread scratch
+    private static final Matrix4f EYE_TRANSFORM = new Matrix4f();
 
     private static boolean diagPreciseFallback; // render-thread only
-    private static boolean depthJoinBroken;     // render-thread only
 
     private DistantEntityDepthFix() {}
 
@@ -124,7 +123,7 @@ public final class DistantEntityDepthFix {
      * only safe outside the frame; until it's on, {@link #render} stays on the single-pass fallback.
      */
     public static void ensureStencil() {
-        if (VSSClientConfig.CONFIG.distantEntityDepthMode != DistantEntityDepthMode.PRECISE) {
+        if (VSSClientConfig.CONFIG.distantEntityDepthMode != DistantEntityDepthMode.PRECISE || shaderPackInUse()) {
             return;
         }
         RenderTarget main = Minecraft.getInstance().getMainRenderTarget();
@@ -161,32 +160,42 @@ public final class DistantEntityDepthFix {
      * bail-out still builds and flushes once plainly, so the entity always renders.
      */
     public static void render(Entity entity, double x, double y, double z, PoseStack poseStack, Runnable build) {
+        DepthRenderState state = new DepthRenderState();
+        var shader = RenderSystem.getShader();
+        int program = GL11.glGetInteger(org.lwjgl.opengl.GL20.GL_CURRENT_PROGRAM);
+        try {
+            renderBanded(entity, x, y, z, poseStack, build, state);
+        } catch (RuntimeException | Error failure) {
+            backingBuffer.close();
+            backingBuffer = new ByteBufferBuilder(1536);
+            BUFFER = MultiBufferSource.immediate(backingBuffer);
+            throw failure;
+        } finally {
+            state.restore();
+            RenderSystem.setShader(() -> shader);
+            org.lwjgl.opengl.GL20.glUseProgram(program);
+        }
+    }
+
+    private static void renderBanded(Entity entity, double x, double y, double z, PoseStack poseStack,
+            Runnable build, DepthRenderState state) {
         Matrix4f proj = RenderSystem.getProjectionMatrix();
+        boolean zeroToOne = GL11.glGetInteger(org.lwjgl.opengl.GL45.GL_CLIP_DEPTH_MODE) == org.lwjgl.opengl.GL45.GL_ZERO_TO_ONE;
         // Re-bandable only under a standard perspective projection: clip w must be -z_eye (w row = 0,0,-1,0).
         boolean perspective = Math.abs(proj.m23() + 1.0f) < 1.0e-4f && Math.abs(proj.m33()) < 1.0e-4f
                 && Math.abs(proj.m03()) < 1.0e-4f && Math.abs(proj.m13()) < 1.0e-4f;
-        // Eye-space depth of the entity center (the pose top maps camera-relative world -> eye; eye looks down -Z).
-        Matrix4f pose = poseStack.last().pose();
+        // In 1.21.1 the camera rotation lives in RenderSystem's model-view, not the entity PoseStack.
+        Matrix4f pose = EYE_TRANSFORM.set(RenderSystem.getModelViewMatrix()).mul(poseStack.last().pose());
         double zc = -(pose.m02() * x + pose.m12() * y + pose.m22() * z + pose.m32());
         double slab = Math.max(entity.getBbWidth(), entity.getBbHeight()) + SLAB_MARGIN;
-        if (!perspective || zc < ENGAGE_DISTANCE || slab > zc / 3.0) {
+        if (!perspective || proj.m32() >= 0 || state.range[0] != 0.0 || state.range[1] != 1.0
+                || zc < ENGAGE_DISTANCE || slab > zc / 3.0) {
             build.run();
             BUFFER.endBatch();
             return;
         }
         double zLo = zc - slab;
         double zHi = zc + slab;
-        // Under a shaderpack, Voxy's Iris pipeline may never write LOD depth into the depth buffer we're
-        // about to test against (pack-excluded or scale-skipped — quirk 46), so entities would x-ray through
-        // LOD terrain. Join it ourselves, once per frame; on any failure fall back to the old behaviour.
-        if (!depthJoinBroken && shaderPackInUse()) {
-            try {
-                VoxyLodDepthJoin.joinIfNeeded();
-            } catch (Throwable t) {
-                depthJoinBroken = true;
-                VSSLogger.warn("Boxy: LOD depth join failed — distant entities may show through LODs under shaderpacks: " + t);
-            }
-        }
         boolean precise = VSSClientConfig.CONFIG.distantEntityDepthMode == DistantEntityDepthMode.PRECISE;
         // Multi-pass requires a real stencil attachment (see ensureStencil) — without one the stencil test
         // always-passes and the depth-clear quad would destroy the frame's depth buffer (quirk 45). Under a
@@ -195,6 +204,7 @@ public final class DistantEntityDepthFix {
         // single pass there — same as BASIC: correct occlusion, mild residual layer shimmer.
         boolean multipass = precise
                 && Minecraft.getInstance().getMainRenderTarget().isStencilEnabled()
+                && !GL11.glIsEnabled(GL11.GL_STENCIL_TEST)
                 && !shaderPackInUse();
         if (precise && !multipass && !diagPreciseFallback && shaderPackInUse()) {
             diagPreciseFallback = true;
@@ -202,8 +212,8 @@ public final class DistantEntityDepthFix {
                     + "(the multi-pass needs a stencil buffer the shader pipeline does not provide)");
         }
         // Window-space band the slab occupies under the real projection, in double precision.
-        double wLo = windowDepth(proj, zLo);
-        double wHi = Math.min(windowDepth(proj, zHi), 1.0); // the band may reach past the far plane
+        double wLo = windowDepth(proj, zLo, zeroToOne);
+        double wHi = Math.min(windowDepth(proj, zHi, zeroToOne), 1.0); // the band may reach past the far plane
         if (wLo < 0.0 || wHi - wLo < 1.0e-9) {
             build.run();
             BUFFER.endBatch();
@@ -211,13 +221,12 @@ public final class DistantEntityDepthFix {
         }
         // Same projection with the z row rebuilt for near/far = the slab. X/Y rows untouched.
         Matrix4f tight = SHARP_PROJ.set(proj);
-        tight.m22((float) (-(zHi + zLo) / (zHi - zLo)));
-        tight.m32((float) (-2.0 * zHi * zLo / (zHi - zLo)));
+        tight.m22((float) (-(zeroToOne ? zHi : zHi + zLo) / (zHi - zLo)));
+        tight.m32((float) (-(zeroToOne ? 1.0 : 2.0) * zHi * zLo / (zHi - zLo)));
         VertexSorting sorting = RenderSystem.getVertexSorting();
 
         if (!multipass) {
-            build.run();
-            flushBanded(tight, proj, sorting, wLo, wHi);
+            flushBanded(build, tight, proj, sorting, wLo, wHi);
             TrackedEntityTypes.diagSharpDepth(entity.getType());
             return;
         }
@@ -227,13 +236,18 @@ public final class DistantEntityDepthFix {
         // skipped during endBatch and the overrides hold. The finally block restores that steady state.
         GL11.glEnable(GL11.GL_STENCIL_TEST);
         try {
+            // Bit 7 belongs to this pass; do not reuse mask pixels left by an earlier entity/frame.
+            int previousClear = GL11.glGetInteger(GL11.GL_STENCIL_CLEAR_VALUE);
+            GL11.glStencilMask(STENCIL_BIT);
+            GL11.glClearStencil(0);
+            GL11.glClear(GL11.GL_STENCIL_BUFFER_BIT);
+            GL11.glClearStencil(previousClear);
             // 1. Mask pass: true-band depth + stencil bit where the depth test passes (color off).
             GL11.glColorMask(false, false, false, false);
             GL11.glStencilFunc(GL11.GL_ALWAYS, STENCIL_BIT, STENCIL_BIT);
             GL11.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_REPLACE);
             GL11.glStencilMask(STENCIL_BIT);
-            build.run();
-            flushBanded(tight, proj, sorting, wLo, wHi);
+            flushBanded(build, tight, proj, sorting, wLo, wHi);
 
             // 2. Depth clear inside the mask (stencil early-out makes the fullscreen quad cheap).
             GL11.glStencilFunc(GL11.GL_EQUAL, STENCIL_BIT, STENCIL_BIT);
@@ -244,16 +258,14 @@ public final class DistantEntityDepthFix {
 
             // 3. Fine pass: the visible render, 24 bits of depth across the slab, clipped to the mask.
             GL11.glColorMask(true, true, true, true);
-            build.run();
-            flushBanded(tight, proj, sorting, 0.0, 1.0);
+            flushBanded(build, tight, proj, sorting, 0.0, 1.0);
 
             // 4. Restore pass: rewrite true depth inside the mask (color off, depth ALWAYS) and zero the
             //    stencil bit (GL_ZERO under the masked write is idempotent per fragment, unlike INVERT).
             GL11.glColorMask(false, false, false, false);
             GL11.glDepthFunc(GL11.GL_ALWAYS);
             GL11.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_ZERO);
-            build.run();
-            flushBanded(tight, proj, sorting, wLo, wHi);
+            flushBanded(build, tight, proj, sorting, wLo, wHi);
         } finally {
             GL11.glColorMask(true, true, true, true);
             GL11.glDepthFunc(GL11.GL_LEQUAL);
@@ -263,12 +275,13 @@ public final class DistantEntityDepthFix {
         TrackedEntityTypes.diagSharpDepth(entity.getType());
     }
 
-    /** Flushes {@link #BUFFER} with the given projection + depth range, restoring both afterwards. */
-    private static void flushBanded(Matrix4f bandProj, Matrix4f restoreProj, VertexSorting sorting,
+    /** Immediate sources can flush when a renderer changes RenderType, so band the build as well as the final flush. */
+    private static void flushBanded(Runnable build, Matrix4f bandProj, Matrix4f restoreProj, VertexSorting sorting,
             double wLo, double wHi) {
         RenderSystem.setProjectionMatrix(bandProj, sorting);
         GL11.glDepthRange(wLo, wHi);
         try {
+            build.run();
             BUFFER.endBatch();
         } finally {
             GL11.glDepthRange(0.0, 1.0);
@@ -279,77 +292,32 @@ public final class DistantEntityDepthFix {
     /** Draws a fullscreen quad at window depth 1.0 (caller sets depth func/stencil; color is masked off). */
     private static void drawFullscreenDepthQuad(Matrix4f restoreProj, VertexSorting sorting) {
         RenderSystem.setProjectionMatrix(QUAD_PROJ.identity(), sorting);
-        PoseStack modelView = RenderSystem.getModelViewStack();
-        modelView.pushPose();
-        modelView.setIdentity();
+        var modelView = RenderSystem.getModelViewStack();
+        modelView.pushMatrix();
+        modelView.identity();
         RenderSystem.applyModelViewMatrix();
         RenderSystem.setShader(GameRenderer::getPositionShader);
         try {
-            BufferBuilder quad = Tesselator.getInstance().getBuilder();
-            quad.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION);
-            quad.vertex(-1.0, -1.0, 1.0).endVertex();
-            quad.vertex(1.0, -1.0, 1.0).endVertex();
-            quad.vertex(1.0, 1.0, 1.0).endVertex();
-            quad.vertex(-1.0, 1.0, 1.0).endVertex();
-            BufferUploader.drawWithShader(quad.end());
+            BufferBuilder quad = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION);
+            quad.addVertex(-1.0f, -1.0f, 1.0f);
+            quad.addVertex(1.0f, -1.0f, 1.0f);
+            quad.addVertex(1.0f, 1.0f, 1.0f);
+            quad.addVertex(-1.0f, 1.0f, 1.0f);
+            BufferUploader.drawWithShader(quad.buildOrThrow());
         } finally {
-            modelView.popPose();
+            modelView.popMatrix();
             RenderSystem.applyModelViewMatrix();
             RenderSystem.setProjectionMatrix(restoreProj, sorting);
         }
     }
 
     /** Window-space depth ([0,1], depth range aside) of an on-axis point at eye distance {@code zEye}. */
-    private static double windowDepth(Matrix4f proj, double zEye) {
+    private static double windowDepth(Matrix4f proj, double zEye, boolean zeroToOne) {
         double zClip = (double) proj.m22() * -zEye + proj.m32();
-        return 0.5 * (zClip / zEye) + 0.5; // clip w == +zEye for a standard perspective matrix
+        return zeroToOne ? zClip / zEye : 0.5 * (zClip / zEye) + 0.5;
     }
-
-    // Iris/Oculus shaderpack detection (routes PRECISE to the single-pass fallback under a pack), resolved
-    // reflectively once so Boxy keeps no compile-time Oculus dependency. Oculus keeps Iris's
-    // net.irisshaders.iris.api.* verbatim (developer guide §12).
-    private static final int IRIS_UNRESOLVED = 0, IRIS_ABSENT = 1, IRIS_PRESENT = 2, IRIS_BROKEN = 3;
-    private static volatile int irisState = IRIS_UNRESOLVED;
-    private static MethodHandle irisShaderPackInUse;
 
     private static boolean shaderPackInUse() {
-        int state = irisState;
-        if (state == IRIS_UNRESOLVED) {
-            state = resolveIris();
-        }
-        if (state == IRIS_ABSENT) {
-            return false;
-        }
-        if (state == IRIS_BROKEN) {
-            return true; // Oculus is present but unreadable — assume a pack could be active, stay single-pass
-        }
-        try {
-            return (boolean) irisShaderPackInUse.invokeExact();
-        } catch (Throwable t) {
-            irisState = IRIS_BROKEN;
-            return true;
-        }
-    }
-
-    private static synchronized int resolveIris() {
-        if (irisState != IRIS_UNRESOLVED) {
-            return irisState;
-        }
-        int resolved;
-        try {
-            Class<?> api = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
-            Object instance = api.getMethod("getInstance").invoke(null);
-            irisShaderPackInUse = MethodHandles.publicLookup()
-                    .unreflect(api.getMethod("isShaderPackInUse"))
-                    .bindTo(instance)
-                    .asType(MethodType.methodType(boolean.class));
-            resolved = IRIS_PRESENT;
-        } catch (ClassNotFoundException absent) {
-            resolved = IRIS_ABSENT;
-        } catch (Throwable t) {
-            resolved = IRIS_BROKEN;
-        }
-        irisState = resolved;
-        return resolved;
+        return me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled();
     }
 }

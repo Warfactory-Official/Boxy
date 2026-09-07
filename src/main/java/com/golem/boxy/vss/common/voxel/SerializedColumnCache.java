@@ -53,11 +53,15 @@ public class SerializedColumnCache {
       }
    }
 
-   /** {@code bytes} must never be mutated afterwards; a null value means "nothing to send" and is cacheable. */
+    /** Values are immutable. Empty columns are sent, but not stored in this byte-budget-only LRU. */
    public void put(String dimension, long packed, byte[] bytes) {
-      if (!this.isEnabled() || bytes == null) {
-         return;
-      }
+       if (!this.isEnabled()) {
+          return;
+       }
+       if (bytes == null || bytes.length == 0) {
+          invalidate(dimension, packed);
+          return;
+       }
 
       // One pathological column must not be able to flush everything else out.
       if ((long)bytes.length > this.maxBytesPerDimension / 8L) {

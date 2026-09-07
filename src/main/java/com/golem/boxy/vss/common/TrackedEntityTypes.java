@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class TrackedEntityTypes {
     private static volatile Set<EntityType<?>> serverSet;
+    private static List<String> serverIds;
     private static volatile Set<EntityType<?>> clientSet;
     private static volatile Set<EntityType<?>> syncedSet; // server-pushed; overrides clientSet while connected
 
@@ -113,10 +114,19 @@ public final class TrackedEntityTypes {
     public static boolean serverContains(EntityType<?> type) {
         Set<EntityType<?>> set = serverSet;
         if (set == null) {
-            set = resolve(VSSServerConfig.CONFIG.trackedEntityTypes, "server trackedEntityTypes");
-            serverSet = set;
+            refreshServerTypes();
+            set = serverSet;
         }
         return set.contains(type);
+    }
+
+    /** Called once per server tick, not on the per-entity tracking hot path. */
+    public static boolean refreshServerTypes() {
+        List<String> ids = VSSServerConfig.CONFIG.trackedEntityTypes;
+        if (serverSet != null && java.util.Objects.equals(serverIds, ids)) return false;
+        serverIds = ids == null ? null : new java.util.ArrayList<>(ids);
+        serverSet = resolve(ids, "server trackedEntityTypes");
+        return true;
     }
 
     /** True if the client should render this entity type beyond the vanilla cull distance. */

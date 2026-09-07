@@ -41,6 +41,7 @@ public class LodRequestManager {
    private boolean cacheLoaded;
    private volatile CompletableFuture<Long2LongOpenHashMap> pendingCacheLoad;
    private final LongOpenHashSet dirtyColumns;
+   private final LongOpenHashSet refreshColumns = new LongOpenHashSet();
    private final LongOpenHashSet rateLimitRetryPositions;
    private final LongOpenHashSet validatedThisSession;
    private final RequestMetrics metrics;
@@ -148,7 +149,8 @@ public class LodRequestManager {
                         >= PRUNE_HYSTERESIS_CHUNKS) {
                      int pruneDistance = this.scanner.getPruneDistance(this.sessionConfig);
                      this.scanner.pruneOutOfRangeTimestamps(this.columnTimestamps, this.metrics, playerCx, playerCz, pruneDistance);
-                     this.scanner.pruneOutOfRangePositions(this.dirtyColumns, playerCx, playerCz, pruneDistance);
+                      this.scanner.pruneOutOfRangePositions(this.dirtyColumns, playerCx, playerCz, pruneDistance);
+                      this.scanner.pruneOutOfRangePositions(this.refreshColumns, playerCx, playerCz, pruneDistance);
                      this.scanner.pruneOutOfRangePositions(this.rateLimitRetryPositions, playerCx, playerCz, pruneDistance);
                      this.scanner.pruneOutOfRangePositions(this.validatedThisSession, playerCx, playerCz, pruneDistance);
                      this.pruneAndCancelOutOfRangePending(playerCx, playerCz, pruneDistance);
@@ -190,15 +192,23 @@ public class LodRequestManager {
                            budget = Math.max(1, Math.round(budget * Math.max(0.0F, 1.0F - (float)columnQueueSize / haltThreshold)));
                         }
 
-                        if (missingVanilla > 0) {
+                         int dirtyBudget = 0;
+                         for (long pos : this.dirtyColumns) {
+                            if (!this.tracker.isInFlight(pos) && !PositionUtil.isOutOfRange(pos, playerCx, playerCz,
+                                  this.scanner.getEffectiveLodDistance(this.sessionConfig))) {
+                               if (++dirtyBudget >= budget) break;
+                            }
+                         }
+                         if (missingVanilla > 0) {
                            int exclusionArea = (2 * viewDistance + 1) * (2 * viewDistance + 1);
                            float vanillaScale = Math.max(0.0F, 1.0F - (float)missingVanilla / exclusionArea);
                            if (vanillaScale <= 0.0F) {
                               budget = 0;
                            } else {
                               budget = Math.max(1, Math.round(budget * vanillaScale));
-                           }
-                        }
+                            }
+                         }
+                         budget = Math.max(budget, dirtyBudget);
 
                         if (budget > 0) {
                            SpiralScanner.ScanResult scanResult = this.scanner
@@ -221,7 +231,7 @@ public class LodRequestManager {
                         }
                      }
 
-                     this.tracker.timeoutSweep(10000000000L, this::onRequestTimedOut);
+                     this.tracker.timeoutSweep(TIMEOUT_NANOS, this::onRequestTimedOut);
                   }
 
                   if (this.queue.hasNext()) {
@@ -256,7 +266,7 @@ public class LodRequestManager {
 
       while (count < maxToSend && this.queue.hasNext()) {
          long pos = this.queue.peekPosition();
-         long ts = this.queue.peekTimestamp();
+          long ts = this.refreshColumns.contains(pos) ? VSSConstants.DIRTY_REFRESH_TIMESTAMP : this.queue.peekTimestamp();
          if (this.tracker.isInFlight(pos)) {
             this.queue.skip();
          } else {
@@ -272,7 +282,7 @@ public class LodRequestManager {
                } else {
                   this.queue.skip();
                   positionBuffer[count] = pos;
-                  timestampBuffer[count] = ts;
+                   timestampBuffer[count] = ts;
                   this.tracker.markPending(pos, now, isGen);
                   this.rateLimitRetryPositions.remove(pos);
                   this.dirtyColumns.remove(pos);
@@ -298,7 +308,8 @@ public class LodRequestManager {
          VSSLogger.error("Failed to send batch chunk request", e);
 
          for (int i = 0; i < count; i++) {
-            this.tracker.removeByRequestId(requestIds[i]);
+             var removed = this.tracker.removeByRequestId(requestIds[i]);
+             if (removed != null && this.refreshColumns.contains(removed.position())) this.dirtyColumns.add(removed.position());
          }
       }
 
@@ -311,14 +322,25 @@ public class LodRequestManager {
       InFlightTracker.RemovedRequest completion = this.tracker.removeByRequestId(requestId);
       boolean wasCached = false;
       if (completion != null) {
-         wasCached = this.columnTimestamps.get(completion.position()) > 0L;
-         this.dirtyColumns.remove(completion.position());
+          wasCached = this.columnTimestamps.get(completion.position()) > 0L || this.refreshColumns.contains(completion.position());
+          // A newer dirty notification may have arrived while this response was in flight.
+          if (!this.dirtyColumns.contains(completion.position())) this.refreshColumns.remove(completion.position());
          this.putTimestamp(completion.position(), columnTimestamp);
          this.validatedThisSession.add(completion.position());
       }
 
       this.metrics.recordColumnReceived();
       return wasCached;
+   }
+
+   boolean acceptsColumn(com.golem.boxy.vss.payloads.VoxelColumnS2CPayload payload) {
+      return payload.dimension().equals(this.lastDimension)
+            && this.tracker.matches(payload.requestId(), PositionUtil.packPosition(payload.chunkX(), payload.chunkZ()));
+   }
+
+   boolean hasCachedColumn(int x, int z) {
+       long packed = PositionUtil.packPosition(x, z);
+       return this.columnTimestamps.get(packed) > 0L || this.refreshColumns.contains(packed);
    }
 
    public void onDirtyColumns(long[] dirtyPositions) {
@@ -328,18 +350,16 @@ public class LodRequestManager {
       boolean incremental = VSSClientConfig.CONFIG.incrementalSpiralRescan;
       int minRing = Integer.MAX_VALUE;
 
-      for (long packed : dirtyPositions) {
-         long stored = this.columnTimestamps.get(packed);
-         if (stored > 0L) {
-            this.dirtyColumns.add(packed);
+       for (long packed : dirtyPositions) {
+             this.dirtyColumns.add(packed);
+             this.refreshColumns.add(packed);
             if (incremental) {
                int ring = PositionUtil.chebyshevDistance(
                      PositionUtil.unpackX(packed), PositionUtil.unpackZ(packed), this.lastChunkX, this.lastChunkZ);
                minRing = Math.min(minRing, ring);
             } else {
                minRing = 0; // mark "something was added" so the full reset below fires
-            }
-         }
+       }
       }
 
       if (minRing != Integer.MAX_VALUE) {
@@ -353,8 +373,9 @@ public class LodRequestManager {
 
    public void onColumnNotGenerated(int requestId) {
       InFlightTracker.RemovedRequest removal = this.tracker.removeByRequestId(requestId);
-      if (removal != null) {
-         this.putTimestamp(removal.position(), 0L);
+       if (removal != null) {
+          this.putTimestamp(removal.position(), 0L);
+          if (!this.dirtyColumns.contains(removal.position())) this.refreshColumns.remove(removal.position());
       }
 
       this.metrics.recordNotGenerated();
@@ -374,8 +395,9 @@ public class LodRequestManager {
 
    public void onRateLimited(int requestId) {
       InFlightTracker.RemovedRequest removal = this.tracker.removeByRequestId(requestId);
-      if (removal != null) {
-         this.rateLimitRetryPositions.add(removal.position());
+       if (removal != null) {
+          this.rateLimitRetryPositions.add(removal.position());
+          if (this.refreshColumns.contains(removal.position())) this.dirtyColumns.add(removal.position());
       }
 
       this.metrics.recordRateLimited();
@@ -394,7 +416,8 @@ public class LodRequestManager {
 
    private void resetRequestState() {
       this.clearTimestamps();
-      this.dirtyColumns.clear();
+       this.dirtyColumns.clear();
+       this.refreshColumns.clear();
       this.rateLimitRetryPositions.clear();
       this.validatedThisSession.clear();
       this.tracker.clear();
@@ -422,6 +445,7 @@ public class LodRequestManager {
     *  latent gap the original had — an in-flight column advances the confirmed ring past itself, so on
     *  timeout a stationary player would otherwise never re-request it. */
    private void onRequestTimedOut(long pos) {
+       if (this.refreshColumns.contains(pos)) this.dirtyColumns.add(pos);
       this.scanner.lowerConfirmedRing(PositionUtil.chebyshevDistance(
             PositionUtil.unpackX(pos), PositionUtil.unpackZ(pos), this.lastChunkX, this.lastChunkZ));
    }

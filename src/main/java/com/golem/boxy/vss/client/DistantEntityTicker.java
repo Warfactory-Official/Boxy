@@ -9,7 +9,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.entity.EntityTickList;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.event.TickEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,8 +45,8 @@ public final class DistantEntityTicker {
         return boxyTicking;
     }
 
-    public static void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || !ClientEntitySync.enabled()) {
+    public static void onClientTick(ClientTickEvent.Post event) {
+        if (!ClientEntitySync.enabled()) {
             return;
         }
         // Between-frames framebuffer prep for the PRECISE depth fix (recreating it mid-frame is unsafe).

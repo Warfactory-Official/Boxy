@@ -7,6 +7,7 @@ import com.golem.boxy.vss.common.processing.OffThreadProcessor;
 import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -52,40 +53,43 @@ public final class LiveColumnSerializer {
      * only a result releases.
      */
     public void submit(OffThreadProcessor.LiveSerializeRequest req, ColumnSnapshot snapshot) {
+        var results = this.resultSink.getPlayerQueue(req.playerUuid());
+        if (results == null) return;
         if (this.isShutdown.get()) {
-            this.publishEmpty(req);
+            this.publishRetry(req, results);
             return;
         }
 
         try {
-            this.executor.execute(() -> this.serializeAndPublish(req, snapshot));
+            this.executor.execute(() -> this.serializeAndPublish(req, snapshot, results));
         } catch (RejectedExecutionException rejected) {
             // Queue full. Mirrors ChunkDiskReader's saturation path: tell the client to back off rather than
             // claiming the column doesn't exist.
             if (VSSLogger.isDebugEnabled()) {
                 VSSLogger.debug("Column serializer saturated, returning rate-limited for " + req.cx() + "," + req.cz());
             }
-            this.resultSink.publishResult(req.playerUuid(), ChunkDiskReader.saturatedResult(
+            results.add(ChunkDiskReader.saturatedResult(
                     req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
         }
     }
 
-    private void serializeAndPublish(OffThreadProcessor.LiveSerializeRequest req, ColumnSnapshot snapshot) {
+    private void serializeAndPublish(OffThreadProcessor.LiveSerializeRequest req, ColumnSnapshot snapshot,
+            ConcurrentLinkedQueue<ChunkDiskReader.ReadResult> results) {
         try {
             byte[] sectionBytes = ColumnSnapshotter.serialize(snapshot);
             this.bytesCache.put(req.dimension(), PositionUtil.packPosition(req.cx(), req.cz()), sectionBytes);
-            this.resultSink.publishResult(req.playerUuid(), ChunkDiskReader.liveResult(
+            results.add(ChunkDiskReader.liveResult(
                     req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.dimension(),
                     sectionBytes, VSSConstants.epochSeconds(), req.submissionOrder()));
         } catch (Throwable t) {
             VSSLogger.error("Failed to serialize snapshot of column [" + req.cx() + ", " + req.cz()
                     + "] in " + req.dimension(), t);
-            this.publishEmpty(req);
+            this.publishRetry(req, results);
         }
     }
 
-    private void publishEmpty(OffThreadProcessor.LiveSerializeRequest req) {
-        this.resultSink.publishResult(req.playerUuid(), ChunkDiskReader.emptyResult(
+    private void publishRetry(OffThreadProcessor.LiveSerializeRequest req, ConcurrentLinkedQueue<ChunkDiskReader.ReadResult> results) {
+        results.add(ChunkDiskReader.saturatedResult(
                 req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
     }
 

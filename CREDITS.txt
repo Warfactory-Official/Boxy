@@ -1,38 +1,25 @@
-Boxy — Credits
+Boxy - Credits
 
-Boxy is a load-time shim that runs the Voxy LOD rendering mod on Forge 1.20.1, plus a from-scratch
-port of Voxy Server Side and a distant entity/player renderer. It stands on the work of several
-other projects:
+Boxy is a native NeoForge 1.21.1 addon providing server LOD streaming and distant entity rendering.
 
-- Voxy (https://modrinth.com/mod/voxy, https://github.com/m3t4f1v3/voxy)
-    The LOD rendering mod Boxy loads. Boxy never modifies Voxy's jar; it remaps and bridges it at
-    load time. All Voxy code and assets remain the property of their authors.
+Voxy - MCRcortex and multiversion/backport contributors
+https://modrinth.com/mod/voxy
+The separately installed LOD engine. Voxy code/assets are not included in Boxy.
+The selected source is All Rights Reserved and forbids redistribution.
 
-- Voxy Server Side (https://modrinth.com/mod/voxy-server-side)
-    The original Fabric server->client LOD-streaming addon that Boxy's VSS port reimplements for
-    Forge 1.20.1.
+Voxy Server Side
+https://modrinth.com/mod/voxy-server-side
+The original server-to-client terrain streaming addon underlying Boxy's VSS implementation.
 
-- Sinytra Connector (https://github.com/Sinytra/Connector)
-    The Fabric-on-Forge compatibility layer whose approach Boxy mirrors for one mod. Boxy's shader
-    support reuses the same Mixin-upgrade technique and artifacts Connector uses.
+Sodium / CaffeineMC
+https://modrinth.com/mod/sodium
+Native renderer dependency and configuration API.
 
-- Mixin Transmogrifier (https://github.com/Sinytra/MixinTransmogrifier,
-  https://github.com/SteelwoolMC/MixinTransmogrifier)
-    MIT. Lets Forge use Fabric's Mixin fork so Voxy's constructor-injecting shader mixins apply.
-    Bundled (shaded) into Boxy — see README.md.
+Iris
+https://modrinth.com/mod/iris
+Optional native shader integration, used through Voxy's pipeline.
 
-- Fabric Mixin fork / sponge-mixin (org.sinytra:sponge-mixin, https://fabricmc.net)
-    The upgraded runtime Mixin that Transmogrifier swaps in. Resolved from Sinytra's maven.
+NeoForge, Sponge Mixin, MixinExtras, and Minecraft/Mojang
+Loader, injection framework, tooling, and game APIs.
 
-- Embeddium (https://modrinth.com/mod/embeddium)
-    The Sodium fork for Forge that Voxy renders through; Boxy's settings page plugs into its
-    video-settings GUI. Used compile-only; resolved at runtime against the user's install.
-
-- Oculus (https://modrinth.com/mod/oculus)
-    The Forge fork of Iris. When present, Voxy's shader integration renders LODs through the active
-    shaderpack; Boxy bridges the `iris` mod id and feeds Oculus to the remap.
-
-- Minecraft Forge (https://minecraftforge.net) and the MCP/mappings teams
-    The mod loader and tooling Boxy targets.
-
-See DEVELOPER_GUIDE.md for how these pieces fit together.
+See DEVELOPER_GUIDE.md and MIGRATION.md for architecture and migration provenance.

@@ -32,6 +32,7 @@ public final class ClientEntitySync {
     /** Revert to the local client config (called on logout). */
     public static void clear() {
         active = false;
+        DistantEntityLighting.clear();
         TrackedEntityTypes.clearSynced();
     }
 

@@ -101,13 +101,12 @@ public final class ColumnSnapshotter {
     }
 
     /**
-     * Any thread, but only one per {@link ColumnSnapshot} — see that class for why. Returns null when the
-     * column has nothing worth sending, matching {@link SectionSerializer}'s empty-column result.
+     * Any thread, but only one per {@link ColumnSnapshot}. An empty array is a real empty-column update.
      */
     public static byte[] serialize(ColumnSnapshot snapshot) {
         ColumnSnapshot.SectionSnapshot[] sections = snapshot.sections();
         if (sections.length == 0) {
-            return null;
+            return new byte[0];
         }
 
         FriendlyByteBuf buf = SCRATCH_OUT_BUF.get();

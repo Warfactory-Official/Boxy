@@ -125,6 +125,8 @@ public abstract class AbstractPlayerRequestState<Q extends Comparable<Q>> implem
 
    @Override
    public void clearProcessingState() {
+       this.rateLimiters.syncOnLoad().reset();
+       this.rateLimiters.generation().reset();
       this.pendingByPosition.clear();
       this.pendingByRequestId.clear();
       this.diskReadDone.clear();

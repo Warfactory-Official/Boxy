@@ -62,9 +62,10 @@ public class RequestProcessingService {
     private final LiveColumnSerializer liveColumnSerializer;
     private final ChunkGenerationService generationService;
     private final SharedBandwidthLimiter bandwidthLimiter;
-    private final ForgeOffThreadProcessor offThreadProcessor;
+    private final ServerOffThreadProcessor offThreadProcessor;
     private final DirtyColumnTracker dirtyTracker;
     private final SerializedColumnCache bytesCache;
+    private final DirtyChunkReloads dirtyReloads;
     private final long startTimeNanos = System.nanoTime();
     private final DirtyColumnBroadcaster dirtyBroadcaster;
     private final Map<ServerLevel, String> dimensionStringCache = new HashMap<>();
@@ -89,10 +90,12 @@ public class RequestProcessingService {
         this.dirtyTracker.setInvalidationSink(this.bytesCache::invalidate);
         this.diskReader = new ChunkDiskReader(config.diskReaderThreads, this.bytesCache);
         this.liveColumnSerializer = new LiveColumnSerializer(this.diskReader, this.bytesCache);
+        this.dirtyReloads = new DirtyChunkReloads(server, this.diskReader, this.liveColumnSerializer);
+        this.diskReader.setDirtyReload(this.dirtyReloads::submit);
         this.generationService = config.enableChunkGeneration ? new ChunkGenerationService(config) : null;
         this.bandwidthLimiter = new SharedBandwidthLimiter(config.bytesPerSecondLimitGlobal);
         Path dataDir = server.getWorldPath(LevelResource.ROOT).resolve("data");
-        this.offThreadProcessor = new ForgeOffThreadProcessor(this.players, this.diskReader, this.generationService, dataDir, config.perDimensionTimestampCacheSizeMB, this.bytesCache);
+        this.offThreadProcessor = new ServerOffThreadProcessor(this.players, this.diskReader, this.generationService, dataDir, config.perDimensionTimestampCacheSizeMB, this.bytesCache);
         this.offThreadProcessor.start();
         this.dirtyBroadcaster = new DirtyColumnBroadcaster(server, this.players, this.offThreadProcessor, this.dirtyTracker, this.bytesCache);
     }
@@ -118,6 +121,8 @@ public class RequestProcessingService {
     }
 
     private void cleanupPlayerServices(UUID uuid) {
+        this.diskReader.cancelFresh(uuid, -1);
+        this.dirtyReloads.cancel(uuid, -1);
         this.diskReader.removePlayerResults(uuid);
         if (this.generationService != null) {
             this.generationService.removePlayer(uuid);
@@ -142,6 +147,8 @@ public class RequestProcessingService {
     }
 
     public void handleCancel(ServerPlayer player, CancelRequestC2SPayload payload) {
+        this.diskReader.cancelFresh(player.getUUID(), payload.requestId());
+        this.dirtyReloads.cancel(player.getUUID(), payload.requestId());
         PlayerRequestState state = this.players.get(player.getUUID());
         if (state != null && state.hasCompletedHandshake()) {
             state.addCancel(payload.requestId());
@@ -157,6 +164,7 @@ public class RequestProcessingService {
 
     public void tick() {
         if (!VSSServerConfig.CONFIG.enabled) {
+            this.dirtyReloads.clear();
             return;
         }
         this.diag.reset(this.offThreadProcessor.getDiagnostics());
@@ -170,6 +178,7 @@ public class RequestProcessingService {
         // matters under a tight budget: these requests already hold permits, so finishing them keeps the
         // pipeline draining, whereas new probes only create more work.
         this.drainLiveSerializeRequests(deadlineNanos);
+        this.dirtyReloads.tick(deadlineNanos);
         List<GenerationReadyData> generationReady = this.tickGenerationService();
         LifecycleResult lifecycle = this.processPlayerLifecycle(config, generationReady, deadlineNanos);
         if (lifecycle.toRemove != null) {
@@ -397,7 +406,7 @@ public class RequestProcessingService {
             if (chunk == null) {
                 // Unloaded since the probe. Not "not generated" — it exists on disk, so read it rather than
                 // telling the client the column doesn't exist. The disk path releases the permit we hold.
-                this.diskReader.submitReadDirect(req.playerUuid(), req.requestId(), level, req.cx(), req.cz(), req.submissionOrder());
+                this.diskReader.submitReadDirect(req.playerUuid(), req.requestId(), level, req.cx(), req.cz(), req.submissionOrder(), true);
                 return;
             }
 
@@ -408,7 +417,7 @@ public class RequestProcessingService {
         } catch (Throwable t) {
             VSSLogger.error("Failed to serialize live column [" + req.cx() + ", " + req.cz() + "] in " + req.dimension(), t);
             this.diskReader.publishResult(req.playerUuid(),
-                    ChunkDiskReader.emptyResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
+                    ChunkDiskReader.saturatedResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
         }
     }
 
@@ -423,9 +432,10 @@ public class RequestProcessingService {
                 ServerPlayer player = state.getPlayer();
                 if (!player.isRemoved()) {
                     ServerLevel level = player.serverLevel();
+                    if (!level.dimension().location().toString().equals(req.dimension())) continue;
                     boolean accepted = this.generationService.submitGeneration(req.playerUuid(), req.requestId(), level, req.cx(), req.cz(), req.submissionOrder());
                     if (!accepted) {
-                        this.generationService.addResult(req.playerUuid(), ChunkDiskReader.emptyResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
+                        this.generationService.addResult(req.playerUuid(), ChunkDiskReader.saturatedResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
                     }
                 }
             }
@@ -524,7 +534,12 @@ public class RequestProcessingService {
         return this.diag.getWindowBytesPerSecond();
     }
 
+    public long getDirtyReloadCompletedCount() {
+        return this.dirtyReloads.completed();
+    }
+
     public void shutdown() {
+        this.dirtyReloads.close();
         try {
             this.offThreadProcessor.shutdown();
         } catch (Exception e) {

@@ -19,7 +19,7 @@ import java.util.OptionalInt;
  * The one place Boxy's VSS port touches Voxy: it feeds received LOD sections straight into Voxy's ingest
  * service. Unlike the original VSS (which used reflective MethodHandles to stay decoupled), Boxy's mod jar
  * compiles against Voxy, so these are direct, type-safe calls (the same approach as {@code BoxyServerIngest}
- * and {@code BoxyCommands}). Client-only.
+ * on the client thread). Client-only.
  */
 public final class VoxyClientBridge {
     private VoxyClientBridge() {}
@@ -30,7 +30,7 @@ public final class VoxyClientBridge {
     }
 
     /**
-     * Ingest a deserialized column into Voxy (one rawIngest per section). Safe to call off the client thread.
+     * Ingest a deserialized column into Voxy (one rawIngest per section). Client thread only, serialized with session shutdown.
      *
      * <p>When {@code clearMissingSections} is set (a re-sync of a column the client already had), every
      * sub-chunk in the world height that the payload did <b>not</b> include is ingested as an empty (air)
@@ -39,16 +39,18 @@ public final class VoxyClientBridge {
      * the pillar) should be cleared, and the stale LOD would linger. Fresh ingests pass {@code false}, so the
      * initial stream is untouched.
      */
-    public static void ingest(ClientLevel level, ResourceKey<Level> dimension, int chunkX, int chunkZ, VoxelColumnData columnData,
-                              boolean clearMissingSections) {
+    public static boolean ingest(ClientLevel level, ResourceKey<Level> dimension, int chunkX, int chunkZ, VoxelColumnData columnData,
+                               boolean clearMissingSections) {
+        if (!net.minecraft.client.Minecraft.getInstance().isSameThread()) throw new IllegalStateException("Voxy ingest must run on the client thread");
+        if (net.minecraft.client.Minecraft.getInstance().level != level || !level.dimension().equals(dimension) || !isAvailable()) return false;
         try {
             WorldIdentifier worldId = WorldIdentifier.of(level);
             if (worldId == null) {
-                return;
+                return false;
             }
             VoxelColumnData.SectionData[] sections = columnData.sections();
             for (VoxelColumnData.SectionData s : sections) {
-                VoxelIngestService.rawIngest(worldId, s.section(), chunkX, s.sectionY(), chunkZ, s.blockLight(), s.skyLight());
+                if (!VoxelIngestService.rawIngest(worldId, s.section(), chunkX, s.sectionY(), chunkZ, s.blockLight(), s.skyLight())) return false;
             }
             if (clearMissingSections) {
                 int minSection = level.getMinSection();
@@ -63,15 +65,17 @@ public final class VoxyClientBridge {
                 Registry<Biome> biomeRegistry = level.registryAccess().registryOrThrow(Registries.BIOME);
                 for (int sectionY = minSection; sectionY < maxSection; sectionY++) {
                     if (!present[sectionY - minSection]) {
-                        VoxelIngestService.rawIngest(worldId, new LevelChunkSection(biomeRegistry), chunkX, sectionY, chunkZ, null, null);
+                        if (!VoxelIngestService.rawIngest(worldId, new LevelChunkSection(biomeRegistry), chunkX, sectionY, chunkZ, null, null)) return false;
                     }
                 }
             }
+            return true;
         } catch (Throwable t) {
             if (t instanceof Error && !(t instanceof LinkageError) && !(t instanceof AssertionError)) {
                 throw (Error) t;
             }
             VSSLogger.error("Voxy raw ingest failed", t);
+            return false;
         }
     }
 

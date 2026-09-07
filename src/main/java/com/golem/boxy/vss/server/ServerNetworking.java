@@ -11,11 +11,11 @@ import com.golem.boxy.vss.payloads.HandshakeC2SPayload;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStartedEvent;
-import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 
 /**
  * Server-side bootstrap + C2S handlers (port of VSS's {@code VSSServerNetworking}). The request-processing
@@ -26,6 +26,11 @@ import net.minecraftforge.event.server.ServerStoppingEvent;
  */
 public final class ServerNetworking {
     private static volatile RequestProcessingService requestService;
+    private static final java.util.Set<java.util.UUID> entitySessions = new java.util.HashSet<>();
+
+    public static boolean hasEntitySession(ServerPlayer player) {
+        return entitySessions.contains(player.getUUID());
+    }
 
     private ServerNetworking() {}
 
@@ -65,10 +70,10 @@ public final class ServerNetworking {
             }
         };
 
-        MinecraftForge.EVENT_BUS.addListener(ServerNetworking::onServerStarted);
-        MinecraftForge.EVENT_BUS.addListener(ServerNetworking::onServerStopping);
-        MinecraftForge.EVENT_BUS.addListener(ServerNetworking::onServerTick);
-        MinecraftForge.EVENT_BUS.addListener(ServerNetworking::onPlayerLoggedOut);
+        NeoForge.EVENT_BUS.addListener(ServerNetworking::onServerStarted);
+        NeoForge.EVENT_BUS.addListener(ServerNetworking::onServerStopping);
+        NeoForge.EVENT_BUS.addListener(ServerNetworking::onServerTick);
+        NeoForge.EVENT_BUS.addListener(ServerNetworking::onPlayerLoggedOut);
     }
 
     private static void onServerStarted(ServerStartedEvent event) {
@@ -78,6 +83,7 @@ public final class ServerNetworking {
     }
 
     private static void onServerStopping(ServerStoppingEvent event) {
+        entitySessions.clear();
         RequestProcessingService service = requestService;
         if (service != null) {
             VSSLogger.info("Stopping VSS LOD request processing service");
@@ -86,16 +92,15 @@ public final class ServerNetworking {
         }
     }
 
-    private static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase == TickEvent.Phase.END) {
-            RequestProcessingService service = requestService;
-            if (service != null) {
-                service.tick();
-            }
+    private static void onServerTick(ServerTickEvent.Post event) {
+        RequestProcessingService service = requestService;
+        if (service != null) {
+            service.tick();
         }
     }
 
     private static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        entitySessions.remove(event.getEntity().getUUID());
         RequestProcessingService service = requestService;
         if (service != null && event.getEntity() instanceof ServerPlayer player) {
             service.removePlayer(player.getUUID());
@@ -103,6 +108,11 @@ public final class ServerNetworking {
     }
 
     private static void handleHandshake(ServerPlayer player, HandshakeC2SPayload payload) {
+        if (payload.protocolVersion() == VSSConstants.PROTOCOL_VERSION) {
+            entitySessions.add(player.getUUID());
+        } else {
+            entitySessions.remove(player.getUUID());
+        }
         VSSLogger.info("VSS handshake received from " + player.getName().getString()
                 + " (protocol v" + payload.protocolVersion() + ", capabilities=" + payload.capabilities() + ")");
         VSSServerConfig config = VSSServerConfig.CONFIG;

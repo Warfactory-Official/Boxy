@@ -21,9 +21,5 @@ build
 eclipse
 run
 
-# Files from Forge MDK
-forge*changelog.txt
-
-# libs — vendored build inputs (see README.md -> Dependencies). The Mixin Transmogrifier classes are
-# committed; Voxy's Mojmap dev jar is not redistributed and must be built/obtained locally.
-libs/voxy-*-dev.jar
+# Native Voxy is a separately supplied, non-redistributed dependency.
+libs/*.jar

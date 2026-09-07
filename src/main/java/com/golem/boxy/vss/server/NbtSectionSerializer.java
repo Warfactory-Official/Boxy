@@ -21,13 +21,10 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.chunk.PalettedContainerRO;
-import net.minecraft.world.level.chunk.ChunkStatus;
-import net.minecraft.world.level.chunk.storage.ChunkStorage;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -35,34 +32,15 @@ import java.util.concurrent.TimeUnit;
  * sections into the same wire blob as {@link SectionSerializer}. This is the disk path used by
  * {@code ChunkDiskReader} to serve already-generated terrain at scale.
  *
- * <p>The 1.21 original used a bundled {@code ChunkSectionsCodecFactory} ({@code class_11897}); on 1.20.1
- * the block-state and biome {@link PalettedContainer} codecs are built inline exactly as vanilla
- * {@code ChunkSerializer.read} does, and the NBT is read with the classic (non-Optional) accessors.
+ * <p>The block-state and biome codecs follow Minecraft 1.21.1's ChunkSerializer layout.
  */
 final class NbtSectionSerializer {
     private static final byte[] EMPTY = new byte[0];
-    // ChunkStorage.read(ChunkPos) — protected, declared on the ChunkMap superclass. Reached reflectively
-    // (SRG name, like BoxyServerIngest) rather than via a mixin @Invoker, so it degrades gracefully if the
-    // chunk-I/O layer is reworked (e.g. C2ME) instead of failing ChunkMap's class transform.
-    private static volatile Method READ_METHOD;
 
     private NbtSectionSerializer() {}
 
-    private static Method resolveReadMethod() throws ReflectiveOperationException {
-        Method m = READ_METHOD;
-        if (m == null) {
-            m = ChunkStorage.class.getDeclaredMethod("m_223454_", ChunkPos.class);
-            m.setAccessible(true);
-            READ_METHOD = m;
-        }
-        return m;
-    }
-
-    @SuppressWarnings("unchecked")
     static byte[] readAndSerializeSections(ChunkMap chunkMap, RegistryAccess registryAccess, int cx, int cz) throws Exception {
-        CompletableFuture<Optional<CompoundTag>> future =
-                (CompletableFuture<Optional<CompoundTag>>) resolveReadMethod().invoke(chunkMap, new ChunkPos(cx, cz));
-        Optional<CompoundTag> optionalTag = future.get(10L, TimeUnit.SECONDS);
+        Optional<CompoundTag> optionalTag = chunkMap.read(new ChunkPos(cx, cz)).get(10L, TimeUnit.SECONDS);
         if (optionalTag.isEmpty()) {
             return null;
         }
@@ -82,7 +60,7 @@ final class NbtSectionSerializer {
 
         ListTag sectionsList = chunkNbt.getList("sections", Tag.TAG_COMPOUND);
         if (sectionsList.isEmpty()) {
-            return null;
+            return new byte[0];
         }
 
         ArrayList<ParsedSection> parsed = new ArrayList<>(sectionsList.size());

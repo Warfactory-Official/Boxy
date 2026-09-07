@@ -17,7 +17,7 @@ public record TickSnapshot(
       return new TickSnapshot(Map.of(), Map.of(), List.of(), List.of(), 0, true);
    }
 
-   public record GenerationReadyData(UUID playerUuid, int requestId, LoadedColumnData columnData, long columnTimestamp, long submissionOrder) {
+   public record GenerationReadyData(UUID playerUuid, int requestId, LoadedColumnData columnData, long columnTimestamp, long submissionOrder, String dimension) {
    }
 
    /**

@@ -28,13 +28,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * service adds a chunk ticket to force generation to {@code FULL}, polls each server tick until the
  * chunk is available, serializes it, and releases the ticket. Per-player + global concurrency limited.
  *
- * <p>The 1.21 original used the new {@code addTicket(Ticket, ...)} API; on 1.20.1 we use
+ * <p>On Minecraft 1.21.1 we use
  * {@code ServerChunkCache.addRegionTicket}/{@code removeRegionTicket} with a dedicated {@link TicketType}.
  */
 public class ChunkGenerationService {
     private static final TicketType<ChunkPos> VSS_GEN_TICKET =
             TicketType.create("boxy_vss_gen", Comparator.comparingLong(ChunkPos::toLong));
-    private static final int TICKET_RADIUS = 1; // ticket level 32 -> generates the chunk to FULL
+    private static final int TICKET_RADIUS = 0; // level 33: FULL without enabling block/entity ticking
 
     private final LinkedHashMap<PendingGenerationKey, PendingGeneration> active = new LinkedHashMap<>();
     private final Map<UUID, Integer> perPlayerActiveCount = new HashMap<>();
@@ -53,6 +53,7 @@ public class ChunkGenerationService {
     }
 
     public boolean submitGeneration(UUID playerUuid, int requestId, ServerLevel level, int cx, int cz, long submissionOrder) {
+        if (this.perPlayerActiveCount.getOrDefault(playerUuid, 0) >= this.maxPerPlayerActive) return false;
         PendingGenerationKey key = new PendingGenerationKey(level.dimension(), cx, cz);
         PendingGeneration existing = this.active.get(key);
         if (existing != null) {
@@ -88,7 +89,7 @@ public class ChunkGenerationService {
                 VSSLogger.debug("Generation timeout for chunk " + gen.pos.x + "," + gen.pos.z + " after " + gen.ticksWaiting
                         + " ticks (" + gen.callbacks.size() + " callbacks)");
                 for (GenerationCallback cb : gen.callbacks) {
-                    this.addResult(cb.playerUuid, ChunkDiskReader.emptyResult(cb.playerUuid, cb.requestId, gen.pos.x, gen.pos.z, cb.submissionOrder));
+                    this.addResult(cb.playerUuid, ChunkDiskReader.saturatedResult(cb.playerUuid, cb.requestId, gen.pos.x, gen.pos.z, cb.submissionOrder));
                     decrementCount(this.perPlayerActiveCount, cb.playerUuid);
                 }
                 releaseTicket(gen);
@@ -104,14 +105,14 @@ public class ChunkGenerationService {
                             if (ready == null) {
                                 ready = new ArrayList<>();
                             }
-                            ready.add(new GenerationReadyData(cb.playerUuid, cb.requestId, columnData, columnTimestamp, cb.submissionOrder));
+                            ready.add(new GenerationReadyData(cb.playerUuid, cb.requestId, columnData, columnTimestamp, cb.submissionOrder, gen.level.dimension().location().toString()));
                             decrementCount(this.perPlayerActiveCount, cb.playerUuid);
                         }
                         this.totalCompleted++;
                     } catch (Exception e) {
                         VSSLogger.error("Failed to extract primitives for generated chunk at " + gen.pos.x + ", " + gen.pos.z, e);
                         for (GenerationCallback cb : gen.callbacks) {
-                            this.addResult(cb.playerUuid, ChunkDiskReader.emptyResult(cb.playerUuid, cb.requestId, gen.pos.x, gen.pos.z, cb.submissionOrder));
+                            this.addResult(cb.playerUuid, ChunkDiskReader.saturatedResult(cb.playerUuid, cb.requestId, gen.pos.x, gen.pos.z, cb.submissionOrder));
                             decrementCount(this.perPlayerActiveCount, cb.playerUuid);
                         }
                     }

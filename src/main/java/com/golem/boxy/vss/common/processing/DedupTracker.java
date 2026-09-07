@@ -1,61 +1,54 @@
 package com.golem.boxy.vss.common.processing;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap.Entry;
-import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 class DedupTracker {
-   private final Long2ObjectOpenHashMap<DedupTracker.Group> pending = new Long2ObjectOpenHashMap();
+    private final Map<String, Long2ObjectOpenHashMap<Group>> pending = new HashMap<>();
 
-   DedupTracker() {
-   }
+    boolean tryAttachOrCreate(long packed, String dimension, UUID player, int requestId, long order) {
+        var slice = pending.computeIfAbsent(dimension, key -> new Long2ObjectOpenHashMap<>());
+        Group existing = slice.get(packed);
+        if (existing != null) {
+            existing.attached().add(new Attachment(player, requestId, order));
+            return true;
+        }
+        slice.put(packed, new Group(player, requestId, dimension, new ArrayList<>(2)));
+        return false;
+    }
 
-   boolean tryAttachOrCreate(long packed, String dimension, UUID primaryPlayer, int requestId, long submissionOrder) {
-      DedupTracker.Group existing = (DedupTracker.Group)this.pending.get(packed);
-      if (existing != null) {
-         existing.attached().add(new DedupTracker.Attachment(primaryPlayer, requestId, submissionOrder));
-         return true;
-      } else {
-         this.pending.put(packed, new DedupTracker.Group(primaryPlayer, dimension, new ArrayList<>(2)));
-         return false;
-      }
-   }
+    Group removeGroup(long packed, String dimension, UUID player, int requestId) {
+        var slice = pending.get(dimension);
+        if (slice == null) return null;
+        Group group = slice.get(packed);
+        // A cancelled/old request must not consume a newer group's ownership of these coordinates.
+        if (group == null || !group.primaryPlayer().equals(player) || group.requestId() != requestId) return null;
+        return slice.remove(packed);
+    }
 
-   DedupTracker.Group removeGroup(long packed) {
-      return (DedupTracker.Group)this.pending.remove(packed);
-   }
-
-   List<DedupTracker.RemovedGroup> removePlayer(UUID playerUuid) {
-      List<DedupTracker.RemovedGroup> removed = null;
-      ObjectIterator<Entry<DedupTracker.Group>> iter = this.pending.long2ObjectEntrySet().iterator();
-
-      while (iter.hasNext()) {
-         Entry<DedupTracker.Group> entry = (Entry<DedupTracker.Group>)iter.next();
-         DedupTracker.Group group = (DedupTracker.Group)entry.getValue();
-         if (group.primaryPlayer().equals(playerUuid)) {
-            if (removed == null) {
-               removed = new ArrayList<>();
+    List<RemovedGroup> removePlayer(UUID player) {
+        var removed = new ArrayList<RemovedGroup>();
+        for (var slice : pending.values()) {
+            var iterator = slice.long2ObjectEntrySet().iterator();
+            while (iterator.hasNext()) {
+                var entry = iterator.next();
+                Group group = entry.getValue();
+                if (group.primaryPlayer().equals(player)) {
+                    removed.add(new RemovedGroup(entry.getLongKey(), group));
+                    iterator.remove();
+                } else {
+                    group.attached().removeIf(attachment -> attachment.playerUuid().equals(player));
+                }
             }
+        }
+        return removed;
+    }
 
-            removed.add(new DedupTracker.RemovedGroup(entry.getLongKey(), group));
-            iter.remove();
-         } else {
-            group.attached().removeIf(a -> a.playerUuid().equals(playerUuid));
-         }
-      }
-
-      return removed != null ? removed : List.of();
-   }
-
-   record Attachment(UUID playerUuid, int requestId, long submissionOrder) {
-   }
-
-   record Group(UUID primaryPlayer, String dimension, ArrayList<DedupTracker.Attachment> attached) {
-   }
-
-   record RemovedGroup(long packed, DedupTracker.Group group) {
-   }
+    record Attachment(UUID playerUuid, int requestId, long submissionOrder) {}
+    record Group(UUID primaryPlayer, int requestId, String dimension, ArrayList<Attachment> attached) {}
+    record RemovedGroup(long packed, Group group) {}
 }

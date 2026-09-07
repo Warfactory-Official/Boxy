@@ -28,6 +28,7 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    private final ConcurrentLinkedQueue<OffThreadProcessor.TimestampInvalidation> timestampInvalidations = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<TickSnapshot.GenerationReadyData> droppedGenerationReady = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<UUID> droppedRemovedPlayers = new ConcurrentLinkedQueue<>();
+   private final ConcurrentLinkedQueue<UUID> droppedDimensionChanges = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<OffThreadProcessor.LiveSerializeRequest> liveSerializeRequests = new ConcurrentLinkedQueue<>();
    private final Thread processingThread;
    private final ColumnTimestampCache timestampCache;
@@ -84,7 +85,10 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
                this.droppedGenerationReady.add(genReady);
             }
 
-            this.droppedRemovedPlayers.addAll(this.pendingSnapshot.removedPlayers());
+             this.droppedRemovedPlayers.addAll(this.pendingSnapshot.removedPlayers());
+             this.pendingSnapshot.players().forEach((uuid, data) -> {
+                if (data.dimensionChanged()) this.droppedDimensionChanges.add(uuid);
+             });
          }
 
          this.pendingSnapshot = snapshot;
@@ -116,7 +120,7 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       // syncOnLoad permit and registered a pending entry, and only a result releases them. Slightly staler
       // bytes (last autosave) is the acceptable cost; a leaked permit is not.
       if (this.liveSerializeRequests.size() >= MAX_QUEUED_LIVE_SERIALIZE) {
-         this.submitDiskRead(playerUuid, requestId, dimension, cx, cz, submissionOrder);
+          this.submitDiskRead(playerUuid, requestId, dimension, cx, cz, submissionOrder, true);
          return;
       }
 
@@ -133,12 +137,12 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
 
    protected abstract void enqueueResultPayloads(PlayerState state, ReadResult result);
 
-   protected abstract void submitDiskRead(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder);
+    protected abstract void submitDiskRead(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder, boolean forceFresh);
 
    protected boolean compressAndEnqueueLoaded(
       PlayerState state, LoadedColumnData column, int requestId, long columnTimestamp, long submissionOrder, String dimension
    ) {
-      if (column.serializedSections() != null && column.serializedSections().length != 0) {
+       if (column.serializedSections() != null) {
          int estimatedBytes = column.serializedSections().length + 25;
          long packed = PositionUtil.packPosition(column.cx(), column.cz());
          this.timestampCache.put(dimension, packed, columnTimestamp, this.cycleNow);
@@ -224,9 +228,8 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       TickSnapshot.GenerationReadyData genReady;
       while ((genReady = this.droppedGenerationReady.poll()) != null) {
          PlayerState state = this.players.get(genReady.playerUuid());
-         if (state != null) {
-            state.removePendingByPosition(genReady.columnData().cx(), genReady.columnData().cz());
-            state.getRateLimiters().generation().release();
+          if (state != null) {
+             if (state.removePendingByRequestId(genReady.requestId()) != null) state.getRateLimiters().generation().release();
          }
       }
    }
@@ -244,6 +247,13 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
 
       for (UUID removedUuid : snapshot.removedPlayers()) {
          this.cleanupDedupGroups(this.dedupTracker.removePlayer(removedUuid));
+      }
+
+      UUID changedUuid;
+      while ((changedUuid = this.droppedDimensionChanges.poll()) != null) {
+         PlayerState state = this.players.get(changedUuid);
+         if (state != null) state.clearProcessingState();
+         this.cleanupDedupGroups(this.dedupTracker.removePlayer(changedUuid));
       }
 
       for (Entry<UUID, TickSnapshot.PlayerTickData> entry : snapshot.players().entrySet()) {
@@ -269,14 +279,12 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
 
    private void cleanupDedupGroups(List<DedupTracker.RemovedGroup> removedGroups) {
       for (DedupTracker.RemovedGroup rg : removedGroups) {
-         int cx = PositionUtil.unpackX(rg.packed());
-         int cz = PositionUtil.unpackZ(rg.packed());
-
          for (DedupTracker.Attachment attachment : rg.group().attached()) {
             PlayerState attachedState = this.players.get(attachment.playerUuid());
             if (attachedState != null) {
-               attachedState.removePendingByPosition(cx, cz);
-               attachedState.getRateLimiters().syncOnLoad().release();
+               if (attachedState.removePendingByRequestId(attachment.requestId()) != null) {
+                  attachedState.getRateLimiters().syncOnLoad().release();
+               }
             }
          }
       }
@@ -292,17 +300,24 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
             while ((result = this.pollDiskResult(state)) != null) {
                int cx = result.chunkX();
                int cz = result.chunkZ();
-               PendingRequest pending = state.removePendingByPosition(cx, cz);
-               int requestId = pending != null ? pending.requestId() : result.requestId();
-               state.getRateLimiters().syncOnLoad().release();
+               String dimension = result.dimension() != null ? result.dimension() : entry.getValue().dimension();
+               if (!dimension.equals(entry.getValue().dimension())) continue;
+               PendingRequest pending = state.removePendingByRequestId(result.requestId());
+               int requestId = result.requestId();
                long packed = PositionUtil.packPosition(cx, cz);
+               DedupTracker.Group group = this.dedupTracker.removeGroup(packed, dimension, playerUuid, requestId);
+               if (pending == null) {
+                  if (group != null) this.dispatchDedupGroup(group, result, cx, cz);
+                  continue;
+               }
+               state.getRateLimiters().syncOnLoad().release();
                if (result.saturated()) {
                   this.ctx.sendActions().add(new SendAction.RateLimited(playerUuid, requestId));
                   if (VSSLogger.isDebugEnabled()) {
                      VSSLogger.debug("Rate-limited " + playerUuid + " (disk saturated): chunk [" + cx + ", " + cz + "]");
                   }
                } else if (result.notFound()) {
-                  this.handleDiskNotFound(playerUuid, state, requestId, cx, cz, pending);
+                  this.handleDiskNotFound(playerUuid, state, requestId, cx, cz, pending, dimension);
                } else {
                   state.markDiskReadDone(cx, cz);
                   if (result.sectionBytes() != null) {
@@ -315,7 +330,6 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
                }
 
                this.ctx.diagnostics().incrementDiskDrained();
-               DedupTracker.Group group = this.dedupTracker.removeGroup(packed);
                if (group != null) {
                   this.dispatchDedupGroup(group, result, cx, cz);
                }
@@ -330,13 +344,14 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       for (DedupTracker.Attachment attachment : group.attached()) {
          PlayerState attachedState = this.players.get(attachment.playerUuid());
          if (attachedState != null) {
-            PendingRequest attachedPending = attachedState.removePendingByPosition(cx, cz);
+            PendingRequest attachedPending = attachedState.removePendingByRequestId(attachment.requestId());
+            if (attachedPending == null) continue;
             attachedState.getRateLimiters().syncOnLoad().release();
-            int attachedRequestId = attachedPending != null ? attachedPending.requestId() : attachment.requestId();
+            int attachedRequestId = attachment.requestId();
             if (result.saturated()) {
                this.ctx.sendActions().add(new SendAction.RateLimited(attachment.playerUuid(), attachedRequestId));
             } else if (result.notFound()) {
-               this.handleDiskNotFound(attachment.playerUuid(), attachedState, attachedRequestId, cx, cz, attachedPending);
+               this.handleDiskNotFound(attachment.playerUuid(), attachedState, attachedRequestId, cx, cz, attachedPending, group.dimension());
             } else if (sectionBytes != null) {
                attachedState.markDiskReadDone(cx, cz);
                this.buildAndEnqueueColumnPayload(
@@ -360,14 +375,14 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       }
    }
 
-   private void handleDiskNotFound(UUID playerUuid, PlayerState state, int requestId, int cx, int cz, PendingRequest pending) {
+   private void handleDiskNotFound(UUID playerUuid, PlayerState state, int requestId, int cx, int cz, PendingRequest pending, String dimension) {
       if (pending == null || pending.type() != RequestType.GENERATION || !this.generationAvailable) {
          this.ctx.sendActions().add(new SendAction.ColumnNotGenerated(playerUuid, requestId));
       } else if (state.getRateLimiters().generation().tryAcquire()) {
-         this.ctx.generationTicketRequests().add(new OffThreadProcessor.GenerationTicketRequest(playerUuid, requestId, cx, cz, this.ctx.sequence().next()));
+         this.ctx.generationTicketRequests().add(new OffThreadProcessor.GenerationTicketRequest(playerUuid, requestId, cx, cz, this.ctx.sequence().next(), dimension));
          state.addPendingRequest(new PendingRequest(requestId, cx, cz, RequestType.GENERATION));
       } else {
-         this.ctx.sendActions().add(new SendAction.ColumnNotGenerated(playerUuid, requestId));
+         this.ctx.sendActions().add(new SendAction.RateLimited(playerUuid, requestId));
       }
    }
 
@@ -379,10 +394,13 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
             for (UUID playerUuid = entry.getKey(); (result = this.pollGenerationResult(state)) != null; this.ctx.diagnostics().incrementGenDrained()) {
                int cx = result.chunkX();
                int cz = result.chunkZ();
-               PendingRequest pending = state.removePendingByPosition(cx, cz);
-               int requestId = pending != null ? pending.requestId() : result.requestId();
+               PendingRequest pending = state.removePendingByRequestId(result.requestId());
+               if (pending == null) continue;
+               int requestId = result.requestId();
                state.getRateLimiters().generation().release();
-               if (result.notFound()) {
+                if (result.saturated()) {
+                   this.ctx.sendActions().add(new SendAction.RateLimited(playerUuid, requestId));
+                } else if (result.notFound()) {
                   this.ctx.sendActions().add(new SendAction.ColumnNotGenerated(playerUuid, requestId));
                } else {
                   state.markDiskReadDone(cx, cz);
@@ -397,14 +415,15 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
 
    private void processGenerationReady(TickSnapshot snapshot) {
       for (TickSnapshot.GenerationReadyData genReady : snapshot.generationReady()) {
-         PlayerState state = this.players.get(genReady.playerUuid());
-         if (state != null) {
-            int cx = genReady.columnData().cx();
-            int cz = genReady.columnData().cz();
-            state.removePendingByPosition(cx, cz);
+          PlayerState state = this.players.get(genReady.playerUuid());
+          if (state != null) {
+             TickSnapshot.PlayerTickData playerData = snapshot.players().get(genReady.playerUuid());
+             if (playerData == null || playerData.dimensionChanged() || !playerData.dimension().equals(genReady.dimension())) continue;
+             int cx = genReady.columnData().cx();
+             int cz = genReady.columnData().cz();
+             if (state.removePendingByRequestId(genReady.requestId()) == null) continue;
             state.markDiskReadDone(cx, cz);
             state.getRateLimiters().generation().release();
-            TickSnapshot.PlayerTickData playerData = snapshot.players().get(genReady.playerUuid());
             if (playerData != null) {
                String dimension = playerData.dimension();
                boolean sent = this.compressAndEnqueueLoaded(
@@ -446,7 +465,7 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       }
    }
 
-   public record GenerationTicketRequest(UUID playerUuid, int requestId, int cx, int cz, long submissionOrder) {
+   public record GenerationTicketRequest(UUID playerUuid, int requestId, int cx, int cz, long submissionOrder, String dimension) {
    }
 
    public record LiveSerializeRequest(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder) {

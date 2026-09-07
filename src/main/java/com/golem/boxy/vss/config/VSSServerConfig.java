@@ -1,5 +1,4 @@
 package com.golem.boxy.vss.config;
-import com.golem.boxy.vss.common.VssMath;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,6 +29,7 @@ public class VSSServerConfig extends JsonConfig {
    public List<String> trackedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
    public int entityTrackingDistanceChunks = 32;
    public boolean forceLoadTrackedEntities = false;
+   /** Square chunk radius around each discovered entity activated by a nearby player. */
    public int forceLoadRadiusChunks = 2;
    /**
     * Wall-clock budget, in microseconds, for everything this mod does to live chunks on the server thread in
@@ -56,27 +56,27 @@ public class VSSServerConfig extends JsonConfig {
 
    @Override
    protected void validate() {
-      this.lodDistanceChunks = VssMath.clamp((long)this.lodDistanceChunks, 1, 512);
-      this.bytesPerSecondLimitPerPlayer = VssMath.clamp((long)this.bytesPerSecondLimitPerPlayer, 1024, 104857600);
-      this.diskReaderThreads = VssMath.clamp((long)this.diskReaderThreads, 1, 64);
-      this.sendQueueLimitPerPlayer = VssMath.clamp((long)this.sendQueueLimitPerPlayer, 1, 100000);
-      this.bytesPerSecondLimitGlobal = (int)VssMath.clamp((long)this.bytesPerSecondLimitGlobal, 1024L, 1073741824L);
-      this.generationConcurrencyLimitGlobal = VssMath.clamp((long)this.generationConcurrencyLimitGlobal, 1, 256);
-      this.generationTimeoutSeconds = VssMath.clamp((long)this.generationTimeoutSeconds, 1, 600);
-      this.dirtyBroadcastIntervalSeconds = VssMath.clamp((long)this.dirtyBroadcastIntervalSeconds, 1, 300);
-      this.syncOnLoadRateLimitPerPlayer = VssMath.clamp((long)this.syncOnLoadRateLimitPerPlayer, 1, 1000);
-      this.syncOnLoadConcurrencyLimitPerPlayer = VssMath.clamp((long)this.syncOnLoadConcurrencyLimitPerPlayer, 1, 1000);
-      this.generationRateLimitPerPlayer = VssMath.clamp((long)this.generationRateLimitPerPlayer, 1, 1000);
-      this.generationConcurrencyLimitPerPlayer = VssMath.clamp((long)this.generationConcurrencyLimitPerPlayer, 1, 1000);
-      this.perDimensionTimestampCacheSizeMB = VssMath.clamp((long)this.perDimensionTimestampCacheSizeMB, 1, 256);
-      this.entityTrackingDistanceChunks = VssMath.clamp((long)this.entityTrackingDistanceChunks, 1, 512);
-      this.forceLoadRadiusChunks = VssMath.clamp((long)this.forceLoadRadiusChunks, 1, 64);
+      this.lodDistanceChunks = Math.clamp((long)this.lodDistanceChunks, 1, 512);
+      this.bytesPerSecondLimitPerPlayer = Math.clamp((long)this.bytesPerSecondLimitPerPlayer, 1024, 104857600);
+      this.diskReaderThreads = Math.clamp((long)this.diskReaderThreads, 1, 64);
+      this.sendQueueLimitPerPlayer = Math.clamp((long)this.sendQueueLimitPerPlayer, 1, 100000);
+      this.bytesPerSecondLimitGlobal = (int)Math.clamp((long)this.bytesPerSecondLimitGlobal, 1024L, 1073741824L);
+      this.generationConcurrencyLimitGlobal = Math.clamp((long)this.generationConcurrencyLimitGlobal, 1, 256);
+      this.generationTimeoutSeconds = Math.clamp((long)this.generationTimeoutSeconds, 1, 600);
+      this.dirtyBroadcastIntervalSeconds = Math.clamp((long)this.dirtyBroadcastIntervalSeconds, 1, 300);
+      this.syncOnLoadRateLimitPerPlayer = Math.clamp((long)this.syncOnLoadRateLimitPerPlayer, 1, 1000);
+      this.syncOnLoadConcurrencyLimitPerPlayer = Math.clamp((long)this.syncOnLoadConcurrencyLimitPerPlayer, 1, 1000);
+      this.generationRateLimitPerPlayer = Math.clamp((long)this.generationRateLimitPerPlayer, 1, 1000);
+      this.generationConcurrencyLimitPerPlayer = Math.clamp((long)this.generationConcurrencyLimitPerPlayer, 1, 1000);
+      this.perDimensionTimestampCacheSizeMB = Math.clamp((long)this.perDimensionTimestampCacheSizeMB, 1, 256);
+      this.entityTrackingDistanceChunks = Math.clamp((long)this.entityTrackingDistanceChunks, 1, 512);
+      this.forceLoadRadiusChunks = Math.clamp((long)this.forceLoadRadiusChunks, 1, 64);
       if (this.probeBudgetMicros != 0) {
-         this.probeBudgetMicros = VssMath.clamp((long)this.probeBudgetMicros, 100, 25000);
+         this.probeBudgetMicros = Math.clamp((long)this.probeBudgetMicros, 100, 25000);
       }
 
       if (this.serializedColumnCacheSizeMB != 0) {
-         this.serializedColumnCacheSizeMB = VssMath.clamp((long)this.serializedColumnCacheSizeMB, 1, 2048);
+         this.serializedColumnCacheSizeMB = Math.clamp((long)this.serializedColumnCacheSizeMB, 1, 2048);
       }
       if (this.trackedEntityTypes == null) {
          this.trackedEntityTypes = new ArrayList<>(List.of("minecraft:player"));

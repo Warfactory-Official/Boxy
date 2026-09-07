@@ -1,175 +1,122 @@
 package com.golem.boxy.vss;
 
+import com.golem.boxy.vss.mixin.AccessorChunkMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerChunkCache;
-import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStoppingEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.server.ServerLifecycleHooks;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
-
-/**
- * Boxy enhancement (no Voxy equivalent): ingest server-side chunks that were generated without the
- * player ever rendering them — most importantly vanilla's spawn-area pre-generation, which runs during
- * world load (before Voxy's client instance exists) over a radius larger than render distance. Voxy's
- * stock hooks only ingest client-rendered or Chunky-requested chunks, so that terrain never became an
- * LOD.
- *
- * <p>A generation-time hook cannot catch the spawn area (Voxy is not initialised yet when it
- * generates), so instead, <b>once when the player joins a world</b>, we walk the currently-loaded full
- * chunks on the server thread and feed unseen ones to Voxy's ingest. This is a short burst, not a
- * perpetual timer: it sweeps roughly once a second and stops as soon as two consecutive sweeps find
- * nothing new (hard-capped at {@link #MAX_SWEEPS}). The repeats exist only because the spawn area may
- * still be finishing generation/lighting in the first second or two — a chunk whose light is not ready
- * yet simply isn't marked seen and is retried on the next sweep. A per-dimension dedup set plus a
- * per-sweep budget keep it cheap and spike-free.
- *
- * <p>This class lives in Boxy's standalone game-layer mod jar (modid "boxy"), so its
- * {@code @Mod.EventBusSubscriber(modid = "boxy")} registers under the matching ModContainer.
- * {@code ChunkMap.getChunks()} is {@code protected}, so chunk enumeration goes through reflection with
- * SRG names (this class is reobfuscated official->SRG by the {@code boxyModJar} build step).
- */
-@Mod.EventBusSubscriber(modid = BoxyVss.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
+/** Bounded integrated-server sweep of spawn chunks generated before Voxy's client session starts. */
+@EventBusSubscriber(modid = BoxyVss.MODID, value = Dist.CLIENT)
 public final class BoxyServerIngest {
-    private static final Logger LOG = LoggerFactory.getLogger("Boxy/ServerIngest");
-    private static final int SWEEP_INTERVAL_TICKS = 20;    // ~1s between sweeps during the burst
-    private static final int MAX_SWEEPS = 15;              // hard cap (~15s) so it can't run forever
-    private static final int STOP_AFTER_EMPTY = 2;         // stop once this many sweeps in a row add nothing
-    private static final int WAIT_BUDGET_TICKS = 30 * 20;  // give Voxy up to ~30s to come up after join
-    private static final int MAX_INGESTS_PER_SWEEP = 512;  // spread large backlogs over a few sweeps
-
     private static final Map<ResourceKey<Level>, LongSet> SEEN = new HashMap<>();
     private static int sweepsLeft;
     private static int emptyStreak;
     private static int waitTicksLeft;
     private static int ticksSinceSweep;
+    private static boolean bulkLogged;
+    private static volatile long bulkIngestCount;
+    private static net.minecraft.server.MinecraftServer activeServer;
 
-    private static boolean reflectionFailed;
-    private static boolean sweepWarned;
-    private static Field chunkMapField;    // ServerChunkCache.chunkMap  (f_8325_)
-    private static Method getChunksMethod; // ChunkMap.getChunks()       (m_140416_)
-    private static Method getFullChunk;    // ChunkHolder.getFullChunk() (m_212234_)
+    public static long getBulkIngestCount() { return bulkIngestCount; }
 
     private BoxyServerIngest() {}
 
-    /** Arm a fresh burst when the player loads into a world. */
+    @SubscribeEvent
+    public static void onBulkTerrainUpdate(com.golem.boxy.vss.server.BulkTerrainUpdateEvent event) {
+        var chunk = event.chunk();
+        if (!(chunk.getLevel() instanceof net.minecraft.server.level.ServerLevel level)
+                || level.getServer() != activeServer || !activeServer.isRunning()) return;
+        var instance = VoxyCommon.getInstance();
+        if (instance == null) return;
+        var world = me.cortex.voxy.commonImpl.WorldIdentifier.of(chunk.getLevel());
+        if (world == null || !instance.isIngestEnabled(world)) return;
+        var light = chunk.getLevel().getLightEngine();
+        var buffer = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+        try {
+            for (int i = 0; i < chunk.getSections().length; i++) {
+                var source = chunk.getSection(i);
+                // Voxy's worker must not read HBM's mutable palettes after this callback returns.
+                source.acquire();
+                net.minecraft.world.level.chunk.LevelChunkSection copy;
+                try {
+                    copy = new net.minecraft.world.level.chunk.LevelChunkSection(source.getStates().copy(), source.getBiomes().recreate());
+                    buffer.clear();
+                    source.getBiomes().write(buffer);
+                    copy.readBiomes(buffer);
+                } finally { source.release(); }
+                int y = chunk.getMinSection() + i;
+                var pos = net.minecraft.core.SectionPos.of(chunk.getPos(), y);
+                var block = light.getLayerListener(net.minecraft.world.level.LightLayer.BLOCK).getDataLayerData(pos);
+                var sky = com.golem.boxy.vss.client.IngestLighting.skyLight(
+                        light.getLayerListener(net.minecraft.world.level.LightLayer.SKY), pos);
+                if (!VoxelIngestService.rawIngest(world, copy, chunk.getPos().x, y, chunk.getPos().z,
+                        block == null ? null : block.copy(), sky == null ? null : sky.copy())) {
+                    com.golem.boxy.vss.common.VSSLogger.warn("HBM direct terrain ingest unavailable for " + chunk.getPos());
+                    return;
+                }
+            }
+            if (!bulkLogged) {
+                bulkLogged = true;
+                com.golem.boxy.vss.common.VSSLogger.info("Boxy HBM direct terrain ingest ACTIVE: completed bulk edits feed Voxy independently of player chunk tracking");
+            }
+            bulkIngestCount++;
+        } finally { buffer.release(); }
+    }
+
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
-        sweepsLeft = MAX_SWEEPS;
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) activeServer = player.server;
+        sweepsLeft = 15;
         emptyStreak = 0;
-        waitTicksLeft = WAIT_BUDGET_TICKS;
+        waitTicksLeft = 600;
         ticksSinceSweep = 0;
     }
 
     @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || sweepsLeft <= 0 || reflectionFailed) {
-            return;
-        }
-        // Wait (without consuming a sweep) until Voxy is actually up, then sweep on an interval.
+    public static void onServerTick(ServerTickEvent.Post event) {
+        if (sweepsLeft <= 0) return;
         if (VoxyCommon.getInstance() == null) {
-            if ((waitTicksLeft -= 1) <= 0) {
-                sweepsLeft = 0; // Voxy never came up (e.g. dedicated server) — give up.
-            }
+            if (--waitTicksLeft <= 0) sweepsLeft = 0;
             return;
         }
-        if (++ticksSinceSweep < SWEEP_INTERVAL_TICKS) {
-            return;
-        }
+        if (++ticksSinceSweep < 20) return;
         ticksSinceSweep = 0;
-
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server == null || !ensureReflection()) {
-            return;
-        }
-        int budget = MAX_INGESTS_PER_SWEEP;
-        for (ServerLevel level : server.getAllLevels()) {
-            budget = sweep(level, budget);
-            if (budget <= 0) {
-                break;
+        int budget = 512;
+        for (var level : event.getServer().getAllLevels()) {
+            LongSet seen = SEEN.computeIfAbsent(level.dimension(), key -> new LongOpenHashSet());
+            for (ChunkHolder holder : ((AccessorChunkMap) level.getChunkSource().chunkMap).boxy$getChunks()) {
+                var chunk = holder.getFullChunkFuture().getNow(ChunkHolder.UNLOADED_LEVEL_CHUNK).orElse(null);
+                if (chunk == null || seen.contains(chunk.getPos().toLong())) continue;
+                if (VoxelIngestService.tryAutoIngestChunk(chunk)) {
+                    seen.add(chunk.getPos().toLong());
+                    if (--budget == 0) break;
+                }
             }
+            if (budget == 0) break;
         }
-        int ingestedThisSweep = MAX_INGESTS_PER_SWEEP - budget;
         sweepsLeft--;
-        emptyStreak = ingestedThisSweep == 0 ? emptyStreak + 1 : 0;
-        if (emptyStreak >= STOP_AFTER_EMPTY) {
-            sweepsLeft = 0; // converged — nothing new is loading; stop until the next world join.
-        }
+        emptyStreak = budget == 512 ? emptyStreak + 1 : 0;
+        if (emptyStreak >= 2) sweepsLeft = 0;
     }
 
     @SubscribeEvent
     public static void onServerStopping(ServerStoppingEvent event) {
+        if (activeServer == event.getServer()) activeServer = null;
         SEEN.clear();
         sweepsLeft = 0;
-    }
-
-    private static int sweep(ServerLevel level, int budget) {
-        LongSet seen = SEEN.computeIfAbsent(level.dimension(), k -> new LongOpenHashSet());
-        try {
-            ServerChunkCache cache = level.getChunkSource();
-            Object map = chunkMapField.get(cache);
-            Iterable<?> holders = (Iterable<?>) getChunksMethod.invoke(map);
-            for (Object holder : holders) {
-                if (budget <= 0) {
-                    break;
-                }
-                Object full = getFullChunk.invoke(holder);
-                if (!(full instanceof LevelChunk chunk)) {
-                    continue;
-                }
-                long key = chunk.getPos().toLong();
-                if (seen.contains(key)) {
-                    continue;
-                }
-                // Only mark seen once Voxy accepts it — chunks still mid-lighting return false and are
-                // retried on a later sweep in the burst.
-                if (VoxelIngestService.tryAutoIngestChunk(chunk)) {
-                    seen.add(key);
-                    budget--;
-                }
-            }
-        } catch (Throwable t) {
-            if (!sweepWarned) {
-                sweepWarned = true;
-                LOG.warn("server-side chunk sweep failed", t);
-            }
-        }
-        return budget;
-    }
-
-    private static boolean ensureReflection() {
-        if (getFullChunk != null) {
-            return true;
-        }
-        try {
-            chunkMapField = ServerChunkCache.class.getDeclaredField("f_8325_");
-            chunkMapField.setAccessible(true);
-            getChunksMethod = Class.forName("net.minecraft.server.level.ChunkMap").getDeclaredMethod("m_140416_");
-            getChunksMethod.setAccessible(true);
-            getFullChunk = Class.forName("net.minecraft.server.level.ChunkHolder").getDeclaredMethod("m_212234_");
-            getFullChunk.setAccessible(true);
-            return true;
-        } catch (Throwable t) {
-            reflectionFailed = true;
-            LOG.warn("could not resolve chunk-enumeration reflection; server-side spawn ingest disabled", t);
-            return false;
-        }
+        bulkLogged = false;
     }
 }

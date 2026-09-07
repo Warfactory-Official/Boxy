@@ -12,11 +12,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Dirty-column live sync: when {@link ChunkMap}{@code .save(ChunkAccess)} (SRG {@code m_140258_}) succeeds, mark that
+ * Dirty-column live sync: when {@link ChunkMap}{@code .save(ChunkAccess)} succeeds, mark that
  * column dirty so the server re-pushes it to clients (via {@code DirtyColumnBroadcaster}). No-op when the VSS service
- * is not running. {@code remap = false} + hand-SRG (see {@link AccessorChunkMap}).
+ * is not running.
  */
-@Mixin(value = ChunkMap.class, remap = false)
+@Mixin(ChunkMap.class)
 public class ChunkMapSaveHook {
     @Unique
     private String boxy$cachedDimension;
@@ -24,7 +24,7 @@ public class ChunkMapSaveHook {
     // require = 0: dirty-sync is an optional feature, so if another mod (e.g. C2ME's reworked chunk I/O)
     // changes ChunkMap.save such that this injection point doesn't match, disable the feature rather than
     // aborting ChunkMap's class transform (which would crash world load).
-    @Inject(method = "m_140258_", at = @At("RETURN"), require = 0)
+    @Inject(method = "save", at = @At("RETURN"), require = 0)
     private void boxy$onChunkSaved(ChunkAccess chunk, CallbackInfoReturnable<Boolean> cir) {
         if (Boolean.TRUE.equals(cir.getReturnValue())) {
             RequestProcessingService service = ServerNetworking.getRequestService();

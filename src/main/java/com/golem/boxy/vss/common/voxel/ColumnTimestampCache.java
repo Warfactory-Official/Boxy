@@ -16,7 +16,7 @@ import java.util.Map.Entry;
 
 public class ColumnTimestampCache {
    private static final int FORMAT_VERSION = 1;
-   private static final String FILE_NAME = "vss-timestamps.bin";
+   private static final String FILE_NAME = "boxy-timestamps-1.21.1-v20.bin";
    private static final int BYTES_PER_ENTRY = 16;
    private final Map<String, ColumnTimestampCache.DimensionCache> caches = new HashMap<>();
    private final int maxEntriesPerDimension;
@@ -112,8 +112,8 @@ public class ColumnTimestampCache {
 
    public void save(Path dataDir) {
       if (!this.caches.isEmpty()) {
-         Path file = dataDir.resolve("vss-timestamps.bin");
-         Path tmpFile = file.resolveSibling("vss-timestamps.bin.tmp");
+         Path file = dataDir.resolve(FILE_NAME);
+         Path tmpFile = file.resolveSibling(FILE_NAME + ".tmp");
 
          try {
             Files.createDirectories(dataDir);
@@ -163,7 +163,7 @@ public class ColumnTimestampCache {
    }
 
    public void load(Path dataDir) {
-      Path file = dataDir.resolve("vss-timestamps.bin");
+      Path file = dataDir.resolve(FILE_NAME);
       if (Files.exists(file)) {
          long now = VSSConstants.epochSeconds();
          int totalLoaded = 0;

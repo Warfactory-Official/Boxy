@@ -23,6 +23,10 @@ public class ConcurrencyLimiter {
       }
    }
 
+   public void reset() {
+      this.currentConcurrency = 0;
+   }
+
    public int getCurrentConcurrency() {
       return this.currentConcurrency;
    }

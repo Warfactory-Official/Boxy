@@ -15,15 +15,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
-import net.minecraftforge.fml.loading.FMLPaths;
+import net.neoforged.fml.loading.FMLPaths;
 import net.minecraft.world.level.Level;
 import net.minecraft.resources.ResourceKey;
 
 public class ColumnCacheStore {
    private static final Pattern SANITIZE_PATTERN = Pattern.compile("[^a-zA-Z0-9._-]");
-   private static final int FORMAT_VERSION = 3;
+   private static final int FORMAT_VERSION = 4;
    private static final int MAX_CACHE_ENTRIES = 2000000;
-   private static final Path CACHE_DIR = FMLPaths.CONFIGDIR.get().resolve("vss").resolve("cache");
+   private static final Path CACHE_DIR = FMLPaths.CONFIGDIR.get().resolve("boxy").resolve("cache-1.21.1-v20");
    private static final ExecutorService IO_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
       Thread t = new Thread(r, "VSS-CacheIO");
       t.setDaemon(true);
@@ -44,7 +44,7 @@ public class ColumnCacheStore {
             Long2LongOpenHashMap result;
             try (DataInputStream in = new DataInputStream(Files.newInputStream(file))) {
                int version = in.readInt();
-               if (version != 3 && version != 2 && version != 1) {
+                if (version != FORMAT_VERSION) {
                   VSSLogger.warn("Column cache " + file + " has unsupported version " + version + ", discarding");
                   return map;
                }
@@ -55,15 +55,10 @@ public class ColumnCacheStore {
                   for (int i = 0; i < count; i++) {
                      long pos = in.readLong();
                      long value = in.readLong();
-                     if (version == 2) {
-                        map.put(pos, value >> 8);
-                     } else {
-                        map.put(pos, value);
-                     }
+                      map.put(pos, value);
                   }
 
-                  String migrationNote = version < 3 ? " (migrated from v" + version + ")" : "";
-                  VSSLogger.info("Loaded " + count + " cached column entries for " + dimensionKey(dimension) + migrationNote);
+                   VSSLogger.info("Loaded " + count + " cached column entries for " + dimensionKey(dimension));
                   return map;
                }
 
@@ -100,7 +95,7 @@ public class ColumnCacheStore {
             Files.createDirectories(file.getParent());
 
             try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(tmpFile))) {
-               out.writeInt(3);
+                out.writeInt(FORMAT_VERSION);
                out.writeInt(columns.size());
                ObjectIterator iter = columns.long2LongEntrySet().iterator();
 

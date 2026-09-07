@@ -75,6 +75,16 @@ class SpiralScanner {
 
       int localConfirmedRing = this.confirmedRing;
 
+      // Explicit updates include vanilla-loaded terrain, which the discovery spiral intentionally skips.
+      for (long packed : dirtyColumns) {
+         if (count >= budget) break;
+         if (!PositionUtil.isOutOfRange(packed, playerCx, playerCz, lodDistance) && !isInFlight.test(packed)) {
+            posBuf[count] = packed;
+            tsBuf[count++] = com.golem.boxy.vss.common.VSSConstants.DIRTY_REFRESH_TIMESTAMP;
+            syncQueued++;
+         }
+      }
+
       label92:
       for (int r = localConfirmedRing; r <= lodDistance; r++) {
          if (2 * r * r <= exclusionDistSq) {
@@ -98,6 +108,7 @@ class SpiralScanner {
                int pdz = cz - playerCz;
                if (pdx * pdx + pdz * pdz > exclusionDistSq) {
                   long packed = PositionUtil.packPosition(cx, cz);
+                  if (dirtyColumns.contains(packed)) continue;
                   if (!isInFlight.test(packed)) {
                      long stored = columnTimestamps.get(packed);
                      long ts;

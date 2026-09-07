@@ -13,9 +13,9 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.world.level.storage.LevelResource;
-import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.TickEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * a {@link LodRequestManager} is created to drive the spiral request loop each client tick. Received columns
  * are queued in {@link ClientColumnProcessor} and ingested via {@link VoxyClientBridge}.
  *
- * <p>S2C handlers are delivered on the client thread by {@link VssChannels} (consumerMainThread), so no
+ * <p>S2C handlers are delivered on the client thread by {@link VssChannels} (HandlerThread.MAIN), so no
  * extra {@code Minecraft#execute} hop is needed.
  */
 public final class ClientNetworking {
@@ -87,17 +87,16 @@ public final class ClientNetworking {
                 columnsReceived.incrementAndGet();
                 bytesReceived.addAndGet(payload.estimatedBytes());
                 LodRequestManager manager = requestManager;
-                // wasCached ⇒ this is a re-sync of a column the client already had, so the ingest must clear
-                // any sub-chunks that emptied since (the server omits now-air sections from the stream).
-                boolean isUpdate = manager != null && manager.onColumnReceived(payload.requestId(), payload.columnTimestamp());
-                columnProcessor.offer(payload, isUpdate);
+                if (manager != null && manager.acceptsColumn(payload)) {
+                    columnProcessor.offer(payload, manager);
+                }
             }
         };
 
-        MinecraftForge.EVENT_BUS.addListener(ClientNetworking::onClientTick);
-        MinecraftForge.EVENT_BUS.addListener(ClientNetworking::onLoggingIn);
-        MinecraftForge.EVENT_BUS.addListener(ClientNetworking::onLoggingOut);
-        MinecraftForge.EVENT_BUS.addListener(DistantEntityTicker::onClientTick);
+        NeoForge.EVENT_BUS.addListener(ClientNetworking::onClientTick);
+        NeoForge.EVENT_BUS.addListener(ClientNetworking::onLoggingIn);
+        NeoForge.EVENT_BUS.addListener(ClientNetworking::onLoggingOut);
+        NeoForge.EVENT_BUS.addListener(DistantEntityTicker::onClientTick);
     }
 
     private static void handleSessionConfig(SessionConfigS2CPayload payload) {
@@ -137,10 +136,7 @@ public final class ClientNetworking {
         }
     }
 
-    private static void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) {
-            return;
-        }
+    private static void onClientTick(ClientTickEvent.Post event) {
         LodRequestManager manager = requestManager;
         // Don't pile up LOD requests while the (singleplayer) server is paused and can't drain them — on
         // unpause the burst of stale requests becomes a flood of responses. In multiplayer isPaused() is
@@ -157,7 +153,7 @@ public final class ClientNetworking {
         requestManager = null;
         // Always handshake so the server can push its session config — including its distant-entity list — even
         // when this client has LOD terrain streaming (receiveServerLods) turned off. The channel is optional
-        // (acceptMissingOr), so a non-Boxy/vanilla server simply never replies.
+        // and checked before sending, so a non-Boxy server never receives an unsupported payload.
         try {
             int clientCaps = VoxyClientBridge.isAvailable() ? VSSConstants.CAPABILITY_VOXEL_COLUMNS : 0;
             VssChannels.sendToServer(new HandshakeC2SPayload(VSSConstants.PROTOCOL_VERSION, clientCaps));

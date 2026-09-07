@@ -1,145 +1,89 @@
 # Boxy
 
-**Boxy runs [Voxy](https://modrinth.com/mod/voxy) — a Fabric Level-of-Detail (LOD) terrain renderer —
-on Minecraft Forge 1.20.1, without modifying Voxy's jar.** Drop the unmodified, Fabric-built Voxy jar
-into `mods/` next to Boxy, and Boxy does everything needed at launch to make Forge load and run it: it
-remaps Voxy's bytecode from Fabric's naming to Forge's, translates its metadata, bridges the Fabric
-APIs it calls, and patches a handful of incompatibilities. Voxy just shows up in the Forge mods list
-and works.
+Boxy is a **native NeoForge 1.21.1 addon for Voxy**. It streams distant terrain from servers and renders configured players/entities beyond vanilla tracking distance.
 
-On top of that, Boxy adds features of its own (below). It's the Forge sibling of **Foxy**, which does
-the same on NeoForge.
+Boxy and Voxy remain separate mods. Boxy does not remap, rewrite, embed, or redistribute Voxy. The Forge 1.20.1 loader bridge is not part of this version.
 
-> **Working on the code?** Read the [**Developer Guide**](DEVELOPER_GUIDE.md) — it covers the whole
-> architecture, the load-time remap pipeline, the mixin handling, and every quirk hit during
-> development.
+## Installation
+
+Client baseline:
+
+| Component | Version |
+| --- | --- |
+| Minecraft | 1.21.1 |
+| Java | 21 |
+| NeoForge | 21.1.248 or newer |
+| Voxy | 0.2.15-beta, NeoForge build from the selected multiversion source |
+| Sodium | 0.8.12-beta.2 for NeoForge 1.21.1 |
+| Iris, optional | 1.8.14-beta.1 for NeoForge 1.21.1 |
+
+Install complete native distribution jars in `mods/`, not the Sodium API/development jars. **Do not install the old Fabric Voxy jar, Embeddium, Oculus, or the old Boxy loader.**
+
+A dedicated server needs only **Boxy + NeoForge**. Its terrain streaming does not require Voxy, Sodium, or Iris. Clients without Boxy may connect; Boxy only sends its custom payloads over negotiated channels.
+
+The Voxy reference's original NeoForge 21.1.230/Iris 1.8.12 pins were not compatible with the selected Sodium beta's current runtime dependencies. See [MIGRATION.md](MIGRATION.md) for the audited changes and remaining verification work.
 
 ## Features
 
-- **Loads unmodified Voxy on Forge 1.20.1** - a load-time Fabric→Forge shim scoped to a single mod
-  (essentially a tiny, Voxy-specific [Sinytra Connector](https://github.com/Sinytra/Connector)).
-- **Voxy Server Side (VSS)** — a from-scratch port of the server→client LOD-streaming protocol: a
-  Forge server streams distant terrain LODs to clients, so players see far terrain the server holds —
-  even terrain they never walked through. Works on dedicated servers and in singleplayer.
-- **Distant entity & player rendering** — renders real players and configured mob types far past
-  vanilla's entity range (out toward Voxy's LOD distance), at full fidelity, by extending vanilla
-  entity tracking rather than faking entities.
-- **Shaderpack support** — with [Oculus](https://modrinth.com/mod/oculus) installed, Voxy's LODs
-  render through the active shaderpack.
-- **Integrations** — Chunky auto-ingest, Starlight, and C2ME.
+- Server terrain streaming from loaded chunks, region-file reads, and optional on-demand generation.
+- Live dirty-column synchronization, bounded work queues, bandwidth/concurrency limits, and persistent validation timestamps.
+- Distant real players and configured entity types, server-synced whitelists, namespace wildcards, interpolation, and client opt-out.
+- Optional non-ticking chunk loading for distant entities, default off.
+- Distant-entity depth modes: Off, Basic, and Precise. Precise falls back to Basic under active shaderpacks.
+- Native Sodium settings page for Boxy's client options.
+- Integrated-server spawn ingestion and retained, configurable Voxy lighting/occlusion fixes that are absent upstream.
 
-## How it works
+Configuration files remain `config/vss-client-config.json` and `config/vss-server-config.json`. Server entity settings apply in memory, never overwrite the client file. The entity-type list remains JSON-only. Reconnect after changing the terrain-streaming master switch.
 
-Voxy's jar is compiled in Fabric's *intermediary* naming (`class_310`, `method_1551`); Forge 1.20.1
-runs in *SRG*. Boxy's core job is to rewrite every Minecraft reference in Voxy's bytecode from
-intermediary to SRG **at load time, in memory**, before Forge sees it — plus translate Fabric metadata
-to Forge, bridge the Fabric APIs Voxy calls, and apply a few compatibility patches. Boxy's own features
-(VSS, distant entities) ship as a separate game-layer mod that the same locator hands to Forge, so
-Voxy's jar stays pristine.
+This is a clean protocol break from Forge Boxy and original Voxy Server Side. Old worlds and caches are **not deleted or converted**. Back up worlds before any Minecraft version upgrade; use separate Voxy storage when moving from 1.20.1.
 
-The full story — the two-classloader-layer architecture, the mapping composition, the mixin handling,
-and the catalog of every quirk — is in the [**Developer Guide**](DEVELOPER_GUIDE.md).
+## Build
 
-## Using Boxy (players)
+Use JDK 21. Supply the native Voxy jar in `libs/voxy-0.2.15-beta+1.21.1-neoforge.jar`, or point `-Pvoxy_jar` to it:
 
-Drop these into your instance's `mods/` folder:
-
-- **Boxy** (this mod)
-- the **unmodified Voxy** Fabric jar
-- **Embeddium** (the Sodium fork for Forge)
-
-Optional: **Oculus** (shaderpacks), **MixinExtras**, **Chunky**, **Starlight**, **C2ME**. For VSS
-server streaming, install Boxy + Voxy on a dedicated Forge 1.20.1 server too (Embeddium isn't needed
-server-side).
-
-## Building (developers)
-
-### Prerequisites
-
-- **JDK 17.** ForgeGradle 6 for 1.20.1 is not compatible with newer JDKs (21, 25, …). Point
-  `JAVA_HOME` at a JDK 17 before building:
-  ```bash
-  export JAVA_HOME="/path/to/jdk-17"
-  ```
-- **The Voxy dev jar in `libs/`** — see [Dependencies](#dependencies-libs) below. Everything else
-  resolves from Maven automatically.
-
-### Build
-
-```bash
-./gradlew shadowJar
-# output: build/libs/boxy-<version>.jar   (the shaded, reobfuscated production jar)
+```powershell
+.\gradlew.bat build "-Pvoxy_jar=C:\path\to\voxy-0.2.15-beta+1.21.1-neoforge.jar"
 ```
 
-After building, sanity-check that `META-INF/MANIFEST.MF` is still the first jar entry and carries
-`Automatic-Module-Name: boxyloader` (the Developer Guide §15 explains why this matters):
+Output: `build/libs/boxy-2.0.0-alpha.1.jar`. There is one production addon jar; no `shadowJar`, reobfuscation, extracted game-layer jar, or bundled Mixin upgrade.
 
-```bash
-unzip -l build/libs/boxy-<version>.jar | head
-unzip -p build/libs/boxy-<version>.jar META-INF/MANIFEST.MF | grep Automatic-Module-Name
+To build the supplied Voxy source without changing the original directory:
+
+```powershell
+.\gradlew.bat stageVoxySource "-Pvoxy_source=C:\path\to\voxy-multiversion"
+.\build\voxy-source\gradlew.bat -p build/voxy-source :1.21.1-neoforge:jar --configure-on-demand
+.\gradlew.bat stageVoxyDependency "-Pvoxy_jar=build/voxy-source/versions/1.21.1-neoforge/build/libs/voxy-0.2.15-beta+1.21.1-neoforge.jar"
+.\gradlew.bat build
 ```
 
-### CI / Releases
+Voxy's license says **All rights reserved / Do not redistribute**. Its jar is a private build input, excluded from Git and Boxy's artifact.
 
-[`.github/workflows/build.yml`](.github/workflows/build.yml) builds the production jar on every push
-and PR — it builds the Voxy dev jar from source automatically (cached by Voxy commit), so CI needs no
-manual `libs/` setup — and runs the manifest sanity check above. Pushing a `v*` tag (e.g. `v1.0.0`)
-additionally publishes a GitHub Release with the jar attached, versioned from the tag.
+## Development Checks
 
-## Dependencies (`libs/`)
-
-Most build inputs resolve from Maven automatically (declared in [`build.gradle`](build.gradle)):
-
-| Dependency | Source |
-|---|---|
-| Minecraft Forge 1.20.1 | ForgeGradle |
-| Embeddium (compile-only) | Modrinth maven — `maven.modrinth:embeddium` |
-| Fabric-Mixin fork | Sinytra maven — `org.sinytra:sponge-mixin` (injected into the jar at build) |
-| tiny-remapper, ASM, MixinExtras | Maven Central / Fabric maven |
-
-Two artifacts are **not on any public Maven** and live in `libs/`:
-
-### `voxy-*-dev.jar` — Voxy's Mojmap dev jar (you must provide this)
-
-Boxy compiles against Voxy's public API and needs Voxy's **named / Mojmap "dev" jar** — the one whose
-method signatures use official Minecraft names (`Level`, `LevelChunkSection`, …). The Modrinth download
-is the *intermediary*-mapped production jar (`class_1937`, `class_2826`, …) and **will not compile**
-against Boxy's official-mapped dev environment.
-
-That dev jar isn't published to Maven, so build it from source:
-
-```bash
-git clone -b mc_1201 https://github.com/m3t4f1v3/voxy.git
-cd voxy
-./gradlew build
-# The named/dev jar is the "-dev" artifact, under build/devlibs/ (or build/libs/ on older Loom):
-cp build/devlibs/voxy-*-dev.jar  <path-to-boxy>/libs/
+```powershell
+.\gradlew.bat test verifyProductionJar verifyClientLaunch
+.\gradlew.bat runSmokeServer -Psmoke
+.\gradlew.bat runSmokeClient -Psmoke
+.\gradlew.bat runSmokeClient -Psmoke -Pwith_iris
+.\gradlew.bat runSmokeClient -Psmoke -Pdimension_smoke
+.\gradlew.bat runSmokeClient -Psmoke -Pocclusion_smoke -Pwith_iris
+.\gradlew.bat runSmokeClient -Psmoke -Pocclusion_smoke -Pocclusion_distance=832
+.\gradlew.bat runSmokeClient -Psmoke -Pocclusion_smoke -Pocclusion_distance=832 -Pocclusion_depth_mode=OFF
+.\gradlew.bat runSmokeClient -Psmoke -Pstability_smoke "-Pstability_world_source=C:\path\to\closed-test-world"
 ```
 
-`build.gradle` picks it up with `fileTree(dir: 'libs', include: ['voxy-*-dev.jar'])`, so the exact
-version suffix in the filename doesn't matter — but the **API version must be 0.2.14-alpha**, which
-Boxy's source targets. This jar is git-ignored, so the repo does not redistribute Voxy's build
-artifacts.
+Server smoke testing requires the operator to accept Minecraft's EULA in `run/smoke-server/eula.txt`. No build task accepts it automatically. A loopback-only server configuration is generated if absent. The server smoke mod starts `boxy-migration-smoke`, checks common hooks and serialization, and stops the server. Client smoke testing copies that world to `run/smoke-client/saves/boxy-migration-smoke`, tests integrated streaming and a pig 160 blocks away, then exits. Do not use these smoke runs with valuable worlds.
 
-### `mixintransmog/` — Mixin Transmogrifier classes (committed)
+`runClient` copies complete native dependencies into `run/client/mods` for normal loader discovery. It does not delete existing mods; remove old staged versions when changing dependencies. Omitting `-Pwith_iris` does not remove an Iris jar already staged by an earlier run.
 
-Loose class files of **Mixin Transmogrifier**, a compatibility tool that lets Forge use Fabric's Mixin
-fork so Voxy's constructor-injecting shader mixins apply under Oculus (Developer Guide §12). Boxy shades
-them into `com.golem.boxy.libs.mixintransmog` at build time. They're committed as loose classes because
-they must be shaded into a Boxy-private package — this is the byte-identical set Sinytra Connector
-bundles, kept in lock-step.
+**Normal and smoke launches are separate.** `runClient`/`runServer` never load the smoke mod or apply its memory overrides, even with `-Psmoke`. `runSmokeClient`/`runSmokeServer` have independent generated JVM argument files and game directories. Normal launches use Voxy's native geometry-memory policy; smoke clients default to 1 GiB. Do not use a 256 MiB geometry cap: the selected Voxy starts evicting when fewer than 256,000,000 bytes remain free, leaving only about 12 MiB before continual remeshing. `build` regenerates and checks the normal client argument file to prevent this regression.
 
-**Credit / license:** Mixin Transmogrifier is MIT-licensed, maintained by
-[Sinytra](https://github.com/Sinytra/MixinTransmogrifier), originally created by
-[SteelwoolMC](https://github.com/SteelwoolMC/MixinTransmogrifier). To refresh these classes, extract
-`io/github/steelwoolmc/mixintransmog/**` from a Transmogrifier build into `libs/mixintransmog/`.
+Stability testing uses `run/stability` and can copy a closed world's LOD data without modifying the source. It sweeps the camera, then requires identical stationary LOD geometry counts and no GL errors. It is not a general visual certification.
 
-## Credits
+The smoke source set is opt-in and is never packaged in Boxy. `-Pdimension_smoke` additionally verifies overworld/nether/overworld travel and resumed streaming. A smoke failure fails the Gradle task even if Minecraft exits with code zero. Automated smoke checks are **not** a substitute for visual shaderpack/occlusion and multiplayer testing.
 
-Boxy builds on Voxy, Voxy Server Side, Sinytra Connector / Mixin Transmogrifier, Embeddium, Oculus, and
-Minecraft Forge. See [CREDITS.txt](CREDITS.txt) for full attribution.
+## CI
 
-## License
+The native build workflow accepts a Voxy jar URL and its SHA-256, supplied through workflow inputs or repository variables `VOXY_JAR_URL` / `VOXY_JAR_SHA256`. Configure both before enabling automatic builds. The selected local source has no authoritative Git commit, so CI does not silently substitute the old `mc_1201` branch or an unverified remote baseline. Only Boxy's jar is uploaded; there is no automatic release publishing during migration.
 
-GPL-3.0-only — see [LICENSE.txt](LICENSE.txt). Copyright © 2026 golem. Bundled or referenced
-third-party components retain their own licenses (see [CREDITS.txt](CREDITS.txt)).
+See [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) for architecture and [MIGRATION.md](MIGRATION.md) for the patch audit.

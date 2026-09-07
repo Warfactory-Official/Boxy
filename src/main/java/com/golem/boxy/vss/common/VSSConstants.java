@@ -1,16 +1,9 @@
 package com.golem.boxy.vss.common;
 
 public final class VSSConstants {
-   public static final String MOD_ID = "vss";
-   public static final int PROTOCOL_VERSION = 18;
-   public static final String CHANNEL_HANDSHAKE = "vss:handshake_c2s";
-   public static final String CHANNEL_CHUNK_REQUEST = "vss:batch_chunk_req";
-   public static final String CHANNEL_SESSION_CONFIG = "vss:session_config";
-   public static final String CHANNEL_DIRTY_COLUMNS = "vss:dirty_columns";
-   public static final String CHANNEL_VOXEL_COLUMN = "vss:voxel_column";
-   public static final String CHANNEL_BATCH_RESPONSE = "vss:batch_response";
-   public static final String CHANNEL_CANCEL_REQUEST = "vss:cancel_request";
-   public static final String CHANNEL_BANDWIDTH_UPDATE = "vss:bandwidth_update";
+   public static final String MOD_ID = "boxy";
+   public static final int PROTOCOL_VERSION = 20;
+   public static final long DIRTY_REFRESH_TIMESTAMP = -2L;
    public static final long NANOS_PER_SECOND = 1000000000L;
    public static final long NANOS_PER_MS = 1000000L;
    public static final int TICKS_PER_SECOND = 20;

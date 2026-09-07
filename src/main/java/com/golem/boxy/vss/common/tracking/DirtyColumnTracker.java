@@ -8,14 +8,6 @@ import java.util.Map;
 public class DirtyColumnTracker {
    private final Map<String, LongOpenHashSet> dirtyColumns = new HashMap<>();
 
-   // Last column marked since the last drain. markDirty sits on ServerLevel.sendBlockUpdated — every block
-   // change server-wide (redstone, pistons, fluids, player edits) — and consecutive changes overwhelmingly
-   // hit the same column, so this memo lets repeat marks skip the monitor entirely. All callers (the two
-   // dirty mixins and the broadcaster's drain) run on the server thread, so plain fields suffice; if an
-   // off-thread caller ever appears, a stale read here only costs one redundant synchronized add.
-   private String lastDimension;
-   private long lastPacked = Long.MIN_VALUE; // sentinel: unreachable for real chunk coords
-
    // Notified the first time a column is marked dirty in each drain window. This is the precise invalidation
    // edge for the serialized-bytes cache: the periodic broadcast alone would leave bytes up to
    // dirtyBroadcastIntervalSeconds stale for a client that re-requests for an unrelated reason (a fresh join,
@@ -32,19 +24,14 @@ public class DirtyColumnTracker {
 
    public void markDirty(String dimension, int cx, int cz) {
       long packed = PositionUtil.packPosition(cx, cz);
-      if (packed == this.lastPacked && dimension.equals(this.lastDimension)) {
-         return; // same column as the last mark since the last drain — already in the set
-      }
+      boolean newlyDirty;
       synchronized (this) {
-         this.dirtyColumns.computeIfAbsent(dimension, k -> new LongOpenHashSet()).add(packed);
-         this.lastPacked = packed;
-         this.lastDimension = dimension;
+         newlyDirty = this.dirtyColumns.computeIfAbsent(dimension, k -> new LongOpenHashSet()).add(packed);
       }
 
-      // Past the memo, so this fires at most once per column per drain window — sendBlockUpdated is far too
-      // hot to hang a cache eviction off unconditionally.
+      // Coalesce interleaved bulk-edit and block-entity notifications, not only consecutive marks.
       DirtyColumnTracker.ColumnInvalidationSink sink = this.invalidationSink;
-      if (sink != null) {
+      if (newlyDirty && sink != null) {
          sink.onColumnDirty(dimension, packed);
       }
    }
@@ -55,9 +42,6 @@ public class DirtyColumnTracker {
    }
 
    public synchronized long[] drainDirty(String dimension) {
-      // Invalidate the memo so a column edited again after this drain gets re-marked.
-      this.lastPacked = Long.MIN_VALUE;
-      this.lastDimension = null;
       LongOpenHashSet set = this.dirtyColumns.get(dimension);
       if (set != null && !set.isEmpty()) {
          long[] result = set.toLongArray();

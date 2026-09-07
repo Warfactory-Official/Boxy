@@ -62,6 +62,10 @@ class InFlightTracker {
       return this.pendingRequests.containsKey(position);
    }
 
+   boolean matches(int requestId, long position) {
+      return this.requestIdToPosition.containsKey(requestId) && this.requestIdToPosition.get(requestId) == position;
+   }
+
    int size() {
       return this.pendingRequests.size();
    }
@@ -126,7 +130,6 @@ class InFlightTracker {
    }
 
    void clear() {
-      this.nextRequestId = 0;
       this.pendingRequests.clear();
       this.requestIdToPosition.clear();
       this.positionToRequestId.clear();

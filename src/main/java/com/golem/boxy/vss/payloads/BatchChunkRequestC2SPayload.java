@@ -3,7 +3,7 @@ package com.golem.boxy.vss.payloads;
 import com.golem.boxy.vss.common.VSSConstants;
 import net.minecraft.network.FriendlyByteBuf;
 
-/** C2S: a batch of column requests. clientTimestamps[i] == 0 means "generate"; &gt; 0 means "I have this version". */
+/** C2S: timestamp 0 generates, -1 discovers, -2 forces a dirty refresh, and positive values validate a version. */
 public record BatchChunkRequestC2SPayload(int[] requestIds, long[] packedPositions, long[] clientTimestamps, int count)
         implements VssPayload {
     @Override

@@ -6,13 +6,13 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
 /**
- * Exposes {@link ClientLevel}'s {@code tickingEntities} list (SRG {@code f_171630_}) so the distant-entity
+ * Exposes {@link ClientLevel}'s {@code tickingEntities} list so the distant-entity
  * ticker can tell which entities the normal tick loop already handles. {@code hasChunkAt} is unreliable here
  * because Voxy populates the client chunk cache in the LOD region (so it reports chunks as present where the
- * entity is in fact not ticking). Client-only; hand-SRG, {@code remap = false}.
+ * entity is in fact not ticking). Client-only.
  */
-@Mixin(value = ClientLevel.class, remap = false)
+@Mixin(ClientLevel.class)
 public interface AccessorClientLevel {
-    @Accessor("f_171630_")
+    @Accessor("tickingEntities")
     EntityTickList boxy$getTickingEntities();
 }

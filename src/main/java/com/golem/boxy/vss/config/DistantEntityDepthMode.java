@@ -12,7 +12,7 @@ package com.golem.boxy.vss.config;
  *   <li>{@link #PRECISE} — multi-pass render (visibility mask → stencil-gated depth clear → fine pass →
  *       depth restore) that keeps compositing exact <b>and</b> spreads the model across the full 24 bits of
  *       depth: essentially perfect internal ordering, at the cost of drawing each distant entity a few
- *       times. Under an active Oculus shaderpack it behaves like {@link #BASIC} (the multi-pass needs a
+ *       times. Under an active Iris shaderpack it behaves like {@link #BASIC} (the multi-pass needs a
  *       stencil buffer the shader pipeline does not provide).</li>
  * </ul>
  */

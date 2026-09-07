@@ -1,6 +1,8 @@
 package com.golem.boxy.vss.common.processing;
 
 public interface ReadResultAccess {
+   String dimension();
+
    int chunkX();
 
    int chunkZ();

@@ -21,14 +21,14 @@ import java.util.UUID;
 class DirtyColumnBroadcaster {
     private final MinecraftServer server;
     private final Map<UUID, PlayerRequestState> players;
-    private final ForgeOffThreadProcessor offThreadProcessor;
+    private final ServerOffThreadProcessor offThreadProcessor;
     private final DirtyColumnTracker dirtyTracker;
     private final SerializedColumnCache bytesCache;
     private int counter = 0;
     private long[] positionFilterBuffer = null;
 
     DirtyColumnBroadcaster(MinecraftServer server, Map<UUID, PlayerRequestState> players,
-                           ForgeOffThreadProcessor offThreadProcessor, DirtyColumnTracker dirtyTracker,
+                           ServerOffThreadProcessor offThreadProcessor, DirtyColumnTracker dirtyTracker,
                            SerializedColumnCache bytesCache) {
         this.server = server;
         this.players = players;
@@ -77,29 +77,38 @@ class DirtyColumnBroadcaster {
                 int playerCz = player.getBlockZ() >> 4;
                 int lodDist = config.lodDistanceChunks;
                 int count = 0;
-                for (long packed : dirty) {
-                    if (!PositionUtil.isOutOfRange(packed, playerCx, playerCz, lodDist)) {
-                        this.positionFilterBuffer[count++] = packed;
-                        if (count >= VSSConstants.MAX_DIRTY_COLUMN_POSITIONS) {
-                            break;
+                boolean sentBatch = false;
+                try {
+                    for (long packed : dirty) {
+                        if (!PositionUtil.isOutOfRange(packed, playerCx, playerCz, lodDist)) {
+                            if (sentBatch) {
+                                // Keep a bounded network batch per player; retain overflow for the next interval.
+                                this.dirtyTracker.markDirty(dimensionStr, PositionUtil.unpackX(packed), PositionUtil.unpackZ(packed));
+                                continue;
+                            }
+                            this.positionFilterBuffer[count++] = packed;
+                            if (count == this.positionFilterBuffer.length) {
+                                sendBatch(player, state, count);
+                                count = 0;
+                                sentBatch = true;
+                            }
                         }
                     }
-                }
-                if (count > 0) {
-                    long[] result = new long[count];
-                    System.arraycopy(this.positionFilterBuffer, 0, result, 0, count);
-                    state.clearDiskReadDoneForPositions(result);
-                    try {
-                        VssChannels.sendToClient(player, new DirtyColumnsS2CPayload(result));
-                    } catch (Exception e) {
-                        VSSLogger.error("Failed to send dirty columns to " + player.getName().getString(), e);
-                        if (failedPlayers == null) {
-                            failedPlayers = new HashSet<>();
-                        }
-                        failedPlayers.add(player.getUUID());
+                    if (count > 0) sendBatch(player, state, count);
+                } catch (Exception e) {
+                    VSSLogger.error("Failed to send dirty columns to " + player.getName().getString(), e);
+                    if (failedPlayers == null) {
+                        failedPlayers = new HashSet<>();
                     }
+                    failedPlayers.add(player.getUUID());
                 }
             }
         }
+    }
+
+    private void sendBatch(ServerPlayer player, PlayerRequestState state, int count) {
+        long[] result = java.util.Arrays.copyOf(this.positionFilterBuffer, count);
+        state.clearDiskReadDoneForPositions(result);
+        VssChannels.sendToClient(player, new DirtyColumnsS2CPayload(result));
     }
 }

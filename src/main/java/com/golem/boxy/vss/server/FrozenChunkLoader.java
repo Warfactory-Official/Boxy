@@ -9,38 +9,31 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStoppingEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.server.ServerLifecycleHooks;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.core.registries.BuiltInRegistries;
+import com.golem.boxy.vss.common.TrackedEntityTypes;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
 
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.List;
+import java.util.ArrayList;
 
-/**
- * Optional, opt-in: keeps a sliding window of <b>load-only (non-ticking)</b> chunks around each player so
- * the configured entity types in otherwise-unloaded terrain still load and render at distance (via
- * {@link MixinChunkMapTrackedEntity} + the client cull mixin). Without this, distant entities only show in
- * naturally-loaded areas (players, spawn chunks, Chunky/forceload).
- *
- * <p>Uses a custom (in-memory, non-persisted) {@link TicketType} via
- * {@code addRegionTicket(type, pos, 0, pos)} — radius 0 ⇒ chunk level 33 = {@code FullChunkStatus.FULL}:
- * entities load and become {@code Visibility.TRACKED} (sent to clients) but do <b>not</b> tick (no AI,
- * movement, or mob spawning). Chunks already loaded by the player's own (ticking) tickets keep their lower
- * level — our ticket never downgrades them — so only the ring beyond view distance is frozen.
- *
- * <p><b>Cost:</b> loads (and <i>generates</i> if ungenerated) the whole {@code forceLoadRadiusChunks}
- * square per player — memory + disk I/O + one-time worldgen, scaling radius² × players. Default off,
- * radius hard-capped. Entities here are frozen (static).
- */
-@Mod.EventBusSubscriber(modid = "boxy", bus = Mod.EventBusSubscriber.Bus.FORGE)
+/** Activates non-ticking chunk windows around discovered entities within a player's tracking range. */
+@EventBusSubscriber(modid = "boxy")
 public final class FrozenChunkLoader {
-    private static final TicketType<ChunkPos> TICKET =
-            TicketType.create("boxy_entity_load", Comparator.comparingLong(ChunkPos::toLong));
+    private static final TicketType<UUID> TICKET =
+            TicketType.create("boxy_entity_load", Comparator.<UUID>naturalOrder());
     /** addRegionTicket radius 0 ⇒ ticket level 33 (FULL, accessible, non-ticking). */
     private static final int LOAD_ONLY_RADIUS = 0;
 
@@ -49,60 +42,79 @@ public final class FrozenChunkLoader {
     private FrozenChunkLoader() {}
 
     private static final class PlayerLoad {
+        final UUID owner;
         ServerLevel level;
-        int centerCx = Integer.MAX_VALUE;
-        int centerCz = Integer.MAX_VALUE;
+        double centerCx = Double.NaN;
+        double centerCz = Double.NaN;
+        int radius = -1;
+        int distance = -1;
+        long revision = -1;
+        List<String> types = List.of();
         final LongSet forced = new LongOpenHashSet();
+
+        PlayerLoad(UUID owner) {
+            this.owner = owner;
+        }
     }
 
     @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) {
-            return;
-        }
+    public static void onServerTick(ServerTickEvent.Post event) {
         VSSServerConfig cfg = VSSServerConfig.CONFIG;
-        if (!cfg.forceLoadTrackedEntities) {
+        MinecraftServer server = event.getServer();
+        boolean typesChanged = TrackedEntityTypes.refreshServerTypes();
+        for (ServerLevel level : server.getAllLevels()) {
+            // Also discover already-loaded entities after a whitelist change.
+            if (typesChanged || server.getTickCount() % 20 == 0) {
+                for (Entity entity : level.getAllEntities()) DiscoveredEntities.get(level).observe(entity);
+            }
+            DiscoveredEntities.get(level).refresh(level);
+        }
+        if (!cfg.forceLoadTrackedEntities || !cfg.extendEntityTracking) {
             if (!LOADS.isEmpty()) {
                 releaseAll();
             }
             return;
         }
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server == null) {
-            return;
-        }
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            updatePlayer(player, cfg.forceLoadRadiusChunks);
+            if (ServerNetworking.hasEntitySession(player)) {
+                updatePlayer(player, cfg);
+            } else {
+                PlayerLoad load = LOADS.remove(player.getUUID());
+                if (load != null) releaseLoad(load);
+            }
         }
     }
 
-    private static void updatePlayer(ServerPlayer player, int radius) {
+    public static void updatePlayer(ServerPlayer player, VSSServerConfig cfg) {
         ServerLevel level = player.serverLevel();
-        int cx = player.getBlockX() >> 4;
-        int cz = player.getBlockZ() >> 4;
+        DiscoveredEntities cache = DiscoveredEntities.get(level);
+        int radius = cfg.forceLoadRadiusChunks;
+        double cx = player.getX();
+        double cz = player.getZ();
 
-        PlayerLoad load = LOADS.computeIfAbsent(player.getUUID(), u -> new PlayerLoad());
+        PlayerLoad load = LOADS.computeIfAbsent(player.getUUID(), PlayerLoad::new);
         if (load.level != level) {
             releaseLoad(load);
             load.level = level;
-            load.centerCx = Integer.MAX_VALUE; // force a full rebuild after a dimension change
-        } else if (cx == load.centerCx && cz == load.centerCz) {
-            return; // player hasn't crossed a chunk boundary — nothing to do
+            load.centerCx = Double.NaN;
+        } else if (cx == load.centerCx && cz == load.centerCz && radius == load.radius
+                && load.distance == cfg.entityTrackingDistanceChunks && load.revision == cache.revision()
+                && load.types.equals(cfg.trackedEntityTypes)) {
+            return;
         }
         load.centerCx = cx;
         load.centerCz = cz;
+        load.radius = radius;
+        load.distance = cfg.entityTrackingDistanceChunks;
+        load.revision = cache.revision();
+        load.types = new ArrayList<>(cfg.trackedEntityTypes);
 
-        LongSet desired = new LongOpenHashSet((2 * radius + 1) * (2 * radius + 1));
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                desired.add(ChunkPos.asLong(cx + dx, cz + dz));
-            }
-        }
+        LongSet desired = cache.desiredChunks(cx, cz, load.distance, radius);
 
         for (long pos : desired) {
             if (load.forced.add(pos)) {
                 ChunkPos cp = new ChunkPos(pos);
-                level.getChunkSource().addRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, cp);
+                level.getChunkSource().addRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, load.owner);
             }
         }
         LongIterator it = load.forced.iterator();
@@ -110,9 +122,40 @@ public final class FrozenChunkLoader {
             long pos = it.nextLong();
             if (!desired.contains(pos)) {
                 ChunkPos cp = new ChunkPos(pos);
-                level.getChunkSource().removeRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, cp);
+                level.getChunkSource().removeRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, load.owner);
                 it.remove();
             }
+        }
+    }
+
+    @SubscribeEvent
+    public static void onEntityJoin(EntityJoinLevelEvent event) {
+        if (event.getLevel() instanceof ServerLevel level) DiscoveredEntities.get(level).observe(event.getEntity());
+    }
+
+    @SubscribeEvent
+    public static void onEntitySection(EntityEvent.EnteringSection event) {
+        Entity entity = event.getEntity();
+        if (event.didChunkChange() && entity.isAddedToLevel() && !entity.isRemoved()
+                && entity.level() instanceof ServerLevel level
+                && !(entity instanceof Player) && TrackedEntityTypes.serverContains(entity.getType())) {
+            DiscoveredEntities.get(level).remember(entity.getUUID(), BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()),
+                    ChunkPos.asLong(event.getNewPos().x(), event.getNewPos().z()));
+        }
+    }
+
+    @SubscribeEvent
+    public static void onEntityLeave(EntityLeaveLevelEvent event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) return;
+        Entity entity = event.getEntity();
+        Entity.RemovalReason reason = entity.getRemovalReason();
+        DiscoveredEntities cache = DiscoveredEntities.get(level);
+        if (reason != null && (reason.shouldDestroy() || reason == Entity.RemovalReason.CHANGED_DIMENSION)) {
+            cache.forget(entity.getUUID());
+        } else if (!(entity instanceof Player)
+                && TrackedEntityTypes.serverContains(entity.getType())) {
+            cache.remember(entity.getUUID(), BuiltInRegistries.ENTITY_TYPE
+                    .getKey(entity.getType()), entity.chunkPosition().toLong());
         }
     }
 
@@ -143,7 +186,7 @@ public final class FrozenChunkLoader {
             LongIterator it = load.forced.iterator();
             while (it.hasNext()) {
                 ChunkPos cp = new ChunkPos(it.nextLong());
-                load.level.getChunkSource().removeRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, cp);
+                load.level.getChunkSource().removeRegionTicket(TICKET, cp, LOAD_ONLY_RADIUS, load.owner);
             }
         }
         load.forced.clear();

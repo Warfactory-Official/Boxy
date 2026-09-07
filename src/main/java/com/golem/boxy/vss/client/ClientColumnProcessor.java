@@ -6,180 +6,182 @@ import com.golem.boxy.vss.payloads.VoxelColumnS2CPayload;
 import io.netty.buffer.Unpooled;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 
+import java.util.HashSet;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Buffers received {@link VoxelColumnS2CPayload}s and deserializes them (optionally off the client thread)
- * into {@link VoxelColumnData}, then hands them to {@link VoxyClientBridge}. The deserialization mirrors the
- * server serializers: {@code varInt count; per section { byte Y; LevelChunkSection.read; bool+2048 blockLight;
- * bool+2048 skyLight }}.
- */
+/** Decode off-thread, but acquire Voxy engines and acknowledge cached terrain only on the client thread. */
 class ClientColumnProcessor {
     static final int MAX_QUEUED_COLUMNS = 8000;
-    private static final long DROP_WARN_INTERVAL_MS = 5000L;
-    private static final int MAX_SECTIONS_PER_COLUMN = 64;
+    private static final long MAX_QUEUED_BYTES = 64L * 1024 * 1024;
+    private static final int COLUMNS_PER_TICK = 64;
+    private ExecutorService executor;
+    private State state;
+    private long columnsDropped;
+    private long lastDropWarnMs;
 
-    private final ConcurrentLinkedQueue<QueuedColumn> columnQueue = new ConcurrentLinkedQueue<>();
-    private final AtomicInteger queueSize = new AtomicInteger();
-    private final AtomicLong columnsDropped = new AtomicLong();
-    private volatile long lastDropWarnMs = 0L;
-    private volatile ExecutorService executor = createExecutor();
-    private final AtomicBoolean processing = new AtomicBoolean();
-    private volatile boolean shuttingDown;
+    // A world/session owns its queues and counters, so a late worker cannot mutate the next world's state.
+    private static final class State {
+        final ClientLevel level;
+        final LodRequestManager manager;
+        final ConcurrentLinkedQueue<VoxelColumnS2CPayload> input = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<Decoded> output = new ConcurrentLinkedQueue<>();
+        final AtomicInteger size = new AtomicInteger();
+        long bytes; // main-thread queue accounting, includes decoded entries until ingested
+        final AtomicBoolean processing = new AtomicBoolean();
+        volatile boolean closed;
 
-    ClientColumnProcessor() {}
-
-    private static ExecutorService createExecutor() {
-        return Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "Boxy-VSS-ColumnProcessor");
-            t.setDaemon(true);
-            return t;
-        });
+        State(ClientLevel level, LodRequestManager manager) {
+            this.level = level;
+            this.manager = manager;
+        }
     }
 
-    void offer(VoxelColumnS2CPayload payload, boolean isUpdate) {
-        if (this.shuttingDown) {
+    void offer(VoxelColumnS2CPayload payload, LodRequestManager manager) {
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null || !level.dimension().equals(payload.dimension())) return;
+        if (state == null || state.level != level || state.manager != manager) {
+            shutdown();
+            state = new State(level, manager);
+        }
+        if (state.size.get() >= MAX_QUEUED_COLUMNS || state.bytes + payload.estimatedBytes() > MAX_QUEUED_BYTES) {
+            columnsDropped++;
+            manager.onRateLimited(payload.requestId());
+            long now = System.currentTimeMillis();
+            if (now - lastDropWarnMs > 5000) {
+                lastDropWarnMs = now;
+                VSSLogger.warn("Column processing queue full; " + columnsDropped + " columns dropped for retry");
+            }
             return;
         }
-        if (this.queueSize.get() < MAX_QUEUED_COLUMNS) {
-            this.columnQueue.add(new QueuedColumn(payload, isUpdate));
-            this.queueSize.incrementAndGet();
-        } else {
-            long dropped = this.columnsDropped.incrementAndGet();
-            long now = System.currentTimeMillis();
-            if (now - this.lastDropWarnMs > DROP_WARN_INTERVAL_MS) {
-                this.lastDropWarnMs = now;
-                VSSLogger.warn("Column processing queue full (" + MAX_QUEUED_COLUMNS + "), " + dropped + " columns dropped total");
-            }
-        }
+        state.size.incrementAndGet();
+        state.bytes += payload.estimatedBytes();
+        state.input.add(payload);
     }
 
     void scheduleProcessing(boolean serverEnabled) {
-        if (this.shuttingDown) {
+        State current = state;
+        if (current == null) return;
+        if (!serverEnabled || !VSSClientConfig.CONFIG.receiveServerLods
+                || current.level != Minecraft.getInstance().level
+                || current.manager != ClientNetworking.getRequestManager()) {
+            shutdown();
             return;
         }
-        if (!serverEnabled || !VSSClientConfig.CONFIG.receiveServerLods || !VoxyClientBridge.isAvailable()) {
-            this.columnQueue.clear();
-            this.queueSize.set(0);
-            return;
-        }
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) {
-            this.columnQueue.clear();
-            this.queueSize.set(0);
-            return;
-        }
-        if (this.columnQueue.isEmpty()) {
-            return;
-        }
-        if (VSSClientConfig.CONFIG.offThreadSectionProcessing) {
-            if (this.processing.compareAndSet(false, true)) {
+        // Keep requests pending while Voxy starts or reloads, rather than claiming un-ingested terrain is cached.
+        if (!VoxyClientBridge.isAvailable()) return;
+        if (!current.input.isEmpty() && current.processing.compareAndSet(false, true)) {
+            Runnable decode = () -> {
                 try {
-                    this.executor.execute(() -> {
+                    for (int i = 0; i < COLUMNS_PER_TICK && !current.closed; i++) {
+                        VoxelColumnS2CPayload payload = current.input.poll();
+                        if (payload == null) break;
+                        VoxelColumnData data = null;
                         try {
-                            this.drainColumnQueue(level);
-                        } finally {
-                            this.processing.set(false);
+                            data = decode(current.level, payload);
+                        } catch (Exception e) {
+                            VSSLogger.error("Invalid voxel column at " + payload.chunkX() + "," + payload.chunkZ(), e);
                         }
-                    });
-                } catch (Exception e) {
-                    this.processing.set(false);
+                        if (!current.closed) current.output.add(new Decoded(payload, data));
+                    }
+                } finally {
+                    current.processing.set(false);
                 }
+            };
+            if (VSSClientConfig.CONFIG.offThreadSectionProcessing) {
+                if (executor == null) {
+                    executor = Executors.newSingleThreadExecutor(r -> {
+                        Thread thread = new Thread(r, "Boxy-VSS-ColumnProcessor");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+                }
+                executor.execute(decode);
+            } else {
+                decode.run();
             }
-        } else {
-            this.drainColumnQueue(level);
+        }
+        for (int i = 0; i < COLUMNS_PER_TICK; i++) {
+            Decoded decoded = current.output.poll();
+            if (decoded == null) break;
+            current.size.decrementAndGet();
+            var payload = decoded.payload();
+            current.bytes -= payload.estimatedBytes();
+            if (!current.manager.acceptsColumn(payload)) continue;
+            if (decoded.data() != null && VoxyClientBridge.ingest(current.level, payload.dimension(),
+                    payload.chunkX(), payload.chunkZ(), decoded.data(),
+                    current.manager.hasCachedColumn(payload.chunkX(), payload.chunkZ()))) {
+                current.manager.onColumnReceived(payload.requestId(), payload.columnTimestamp());
+            } else {
+                current.manager.onRateLimited(payload.requestId());
+            }
         }
     }
 
-    private void drainColumnQueue(ClientLevel level) {
-        Registry<Biome> biomeRegistry = level.registryAccess().registryOrThrow(Registries.BIOME);
-        QueuedColumn queued;
-        while (!Thread.currentThread().isInterrupted() && (queued = this.columnQueue.poll()) != null) {
-            this.queueSize.decrementAndGet();
-            VoxelColumnS2CPayload payload = queued.payload();
-            if (!level.dimension().equals(payload.dimension())) {
-                continue;
-            }
-            byte[] decompressed = payload.decompressedSections();
-            if (decompressed == null || decompressed.length == 0) {
-                continue;
-            }
-            try {
-                FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(decompressed));
-                try {
-                    int sectionCount = Math.max(0, Math.min(buf.readVarInt(), MAX_SECTIONS_PER_COLUMN));
-                    VoxelColumnData.SectionData[] sectionDatas = new VoxelColumnData.SectionData[sectionCount];
-                    for (int i = 0; i < sectionCount; i++) {
-                        int sectionY = buf.readByte();
-                        LevelChunkSection section = new LevelChunkSection(biomeRegistry);
-                        section.read(buf);
-                        DataLayer blockLight = null;
-                        if (buf.readBoolean()) {
-                            byte[] lightBytes = new byte[2048];
-                            buf.readBytes(lightBytes);
-                            blockLight = new DataLayer(lightBytes);
-                        }
-                        DataLayer skyLight = null;
-                        if (buf.readBoolean()) {
-                            byte[] lightBytes = new byte[2048];
-                            buf.readBytes(lightBytes);
-                            skyLight = new DataLayer(lightBytes);
-                        }
-                        sectionDatas[i] = new VoxelColumnData.SectionData(sectionY, section, blockLight, skyLight);
-                    }
-                    VoxelColumnData columnData = new VoxelColumnData(sectionDatas, payload.columnTimestamp());
-                    VoxyClientBridge.ingest(level, payload.dimension(), payload.chunkX(), payload.chunkZ(), columnData, queued.isUpdate());
-                } finally {
-                    buf.release();
+    private static VoxelColumnData decode(ClientLevel level, VoxelColumnS2CPayload payload) {
+        byte[] bytes = payload.decompressedSections();
+        if (bytes == null) throw new IllegalArgumentException("Invalid compressed sections");
+        // An empty column is still a real update: its previously stored sections must be cleared.
+        if (bytes.length == 0) return new VoxelColumnData(new VoxelColumnData.SectionData[0], payload.columnTimestamp());
+        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(bytes));
+        try {
+            int count = buf.readVarInt();
+            if (count < 0 || count > level.getSectionsCount()) throw new IllegalArgumentException("Section count out of range");
+            var sections = new VoxelColumnData.SectionData[count];
+            var ys = new HashSet<Integer>();
+            var biomes = level.registryAccess().registryOrThrow(Registries.BIOME);
+            for (int i = 0; i < count; i++) {
+                int y = buf.readByte();
+                if (y < level.getMinSection() || y >= level.getMaxSection() || !ys.add(y)) {
+                    throw new IllegalArgumentException("Invalid or duplicate section Y");
                 }
-            } catch (Exception e) {
-                VSSLogger.error("Failed to process voxel column at " + payload.chunkX() + "," + payload.chunkZ(), e);
+                var section = new LevelChunkSection(biomes);
+                section.read(buf);
+                DataLayer block = null;
+                if (buf.readBoolean()) {
+                    byte[] light = new byte[2048];
+                    buf.readBytes(light);
+                    block = new DataLayer(light);
+                }
+                DataLayer sky = null;
+                if (buf.readBoolean()) {
+                    byte[] light = new byte[2048];
+                    buf.readBytes(light);
+                    sky = new DataLayer(light);
+                }
+                sections[i] = new VoxelColumnData.SectionData(y, section, block, sky);
             }
+            if (buf.isReadable()) throw new IllegalArgumentException("Trailing column bytes");
+            return new VoxelColumnData(sections, payload.columnTimestamp());
+        } finally {
+            buf.release();
         }
     }
 
     void shutdown() {
-        this.shuttingDown = true;
-        ExecutorService old = this.executor;
-        old.shutdownNow();
-        this.columnQueue.clear();
-        this.queueSize.set(0);
-        try {
-            old.awaitTermination(2L, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (state != null) {
+            state.closed = true;
+            state.input.clear();
+            state.output.clear();
+            state = null;
         }
-        this.processing.set(false);
-        this.executor = createExecutor();
-        this.shuttingDown = false;
+        if (executor != null) {
+            executor.shutdownNow();
+            executor = null;
+        }
     }
 
-    int getQueuedCount() {
-        return this.queueSize.get();
-    }
+    int getQueuedCount() { return state == null ? 0 : state.size.get(); }
+    long getColumnsDropped() { return columnsDropped; }
+    void resetStats() { columnsDropped = 0; lastDropWarnMs = 0; }
 
-    long getColumnsDropped() {
-        return this.columnsDropped.get();
-    }
-
-    void resetStats() {
-        this.columnsDropped.set(0L);
-        this.lastDropWarnMs = 0L;
-    }
-
-    /** A queued column plus whether it re-syncs one the client already had (⇒ clear sub-chunks that emptied). */
-    private record QueuedColumn(VoxelColumnS2CPayload payload, boolean isUpdate) {}
+    private record Decoded(VoxelColumnS2CPayload payload, VoxelColumnData data) {}
 }

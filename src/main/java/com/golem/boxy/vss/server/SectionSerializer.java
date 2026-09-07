@@ -75,7 +75,7 @@ public final class SectionSerializer {
         }
 
         if (includedSections.isEmpty()) {
-            return new LoadedColumnData(cx, cz, null, 0);
+            return new LoadedColumnData(cx, cz, new byte[0], 25);
         }
 
         FriendlyByteBuf buf = SCRATCH_BUF.get();

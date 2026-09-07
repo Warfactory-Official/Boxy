@@ -1,5 +1,4 @@
 package com.golem.boxy.vss.config;
-import com.golem.boxy.vss.common.VssMath;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,7 +21,7 @@ public class VSSClientConfig extends JsonConfig {
    // Fix distant-entity z-fighting by re-banding the depth buffer around each tracked entity at render time
    // (projection z-row swap + glDepthRange around a per-entity flush; see DistantEntityDepthFix and
    // DistantEntityDepthMode: OFF / BASIC = depth stays exact / PRECISE = ~10x more depth steps for a
-   // slightly fuzzy occlusion boundary). Applies with or without an Oculus shaderpack (shaderpack support
+   // slightly fuzzy occlusion boundary). Applies with or without an Iris shaderpack (shaderpack support
    // is experimental). Read live.
    public DistantEntityDepthMode distantEntityDepthMode = DistantEntityDepthMode.PRECISE;
    // Round Voxy's hierarchical-Z occlusion buffer UP to the next power of two instead of down, so its depth
@@ -56,8 +55,8 @@ public class VSSClientConfig extends JsonConfig {
 
    @Override
    protected void validate() {
-      this.lodDistanceChunks = VssMath.clamp((long)this.lodDistanceChunks, 0, 512);
-      this.entityRenderDistanceChunks = VssMath.clamp((long)this.entityRenderDistanceChunks, 1, 512);
+      this.lodDistanceChunks = Math.clamp((long)this.lodDistanceChunks, 0, 512);
+      this.entityRenderDistanceChunks = Math.clamp((long)this.entityRenderDistanceChunks, 1, 512);
       if (this.renderedEntityTypes == null) {
          this.renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
       }
@@ -66,7 +65,7 @@ public class VSSClientConfig extends JsonConfig {
       }
    }
 
-   /** Clamp fields to their valid ranges and persist to disk. Used by the in-game (Embeddium) settings page. */
+   /** Clamp fields to their valid ranges and persist to disk. Used by the native Sodium settings page. */
    public void saveClamped() {
       this.validate();
       this.save();

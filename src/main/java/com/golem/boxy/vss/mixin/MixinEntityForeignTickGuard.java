@@ -22,18 +22,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * triggered by a foreign ticker rather than the entity's own).
  *
  * <p>Boxy's distant entities must be ticked <b>only</b> by {@link DistantEntityTicker} (which pins them). This
- * guard cancels {@code Entity.tick}/{@code rideTick} (SRG {@code m_8119_}/{@code m_6083_}) for a Boxy-managed
+ * guard cancels {@code Entity.tick}/{@code rideTick} for a Boxy-managed
  * distant entity whenever the caller is <b>not</b> Boxy's own ticker ({@link DistantEntityTicker#isBoxyTicking()}):
  * a foreign re-tick loop then sees the entity unmoved and stops, while Boxy's own tick runs normally. The
  * common in-view tick fast-rejects at the {@code tickingEntities} check.
  *
- * <p>Client-only ({@code boxy.mixins.json} "client"); hand-SRG, {@code remap = false}, {@code require = 0} so
+ * <p>Client-only ({@code boxy.mixins.json} "client"); {@code require = 0} so
  * it degrades instead of crashing. The {@code instanceof ClientLevel} guard keeps it inert for server-side
  * entity ticks on the integrated server (where {@code Entity.tick} also runs for {@code ServerLevel} entities).
  */
-@Mixin(value = Entity.class, remap = false)
+@Mixin(Entity.class)
 public abstract class MixinEntityForeignTickGuard {
-    @Inject(method = {"m_8119_", "m_6083_"}, at = @At("HEAD"), cancellable = true, require = 0)
+    @Inject(method = {"tick", "rideTick"}, at = @At("HEAD"), cancellable = true, require = 0)
     private void boxy$skipForeignDistantTick(CallbackInfo ci) {
         // All guards below are independent early-returns, so ordering is purely a cost question. This runs
         // for EVERY entity tick on the client, so the feature gate goes first: when the feature is off

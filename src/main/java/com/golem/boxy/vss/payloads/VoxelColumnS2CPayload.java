@@ -75,7 +75,7 @@ public final class VoxelColumnS2CPayload implements VssPayload {
             case 0 -> dim = Level.OVERWORLD;
             case 1 -> dim = Level.NETHER;
             case 2 -> dim = Level.END;
-            default -> dim = ResourceKey.create(Registries.DIMENSION, new ResourceLocation(buf.readUtf(MAX_DIMENSION_STRING_LENGTH)));
+            default -> dim = ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(buf.readUtf(MAX_DIMENSION_STRING_LENGTH)));
         }
         long columnTimestamp = buf.readLong();
         byte[] sectionBytes = buf.readByteArray(MAX_SECTIONS_SIZE);
