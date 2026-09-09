@@ -34,7 +34,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew build --no-daemon --console=plain
-      - name: Upload Boxy only
+      - name: Upload Boxy distribution artifact
         uses: actions/upload-artifact@v4
         with:
           name: boxy-neoforge-1.21.1
@@ -49,5 +49,5 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest build/libs/boxy-*.jar \
             --title "Latest Boxy build (${GITHUB_SHA::7})" \
-            --notes "Automated Boxy NeoForge 1.21.1 build of ${GITHUB_SHA}" \
+            --notes "Automated Boxy NeoForge 1.21.1 build of ${GITHUB_SHA}. Install the single Boxy jar; Voxy is downloaded separately at client startup." \
             --latest=false

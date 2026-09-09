@@ -2,9 +2,9 @@
 
 ## Current Architecture
 
-Boxy 2.x is one ordinary **NeoForge 1.21.1 / Java 21** addon. Voxy is a separate, unmodified native mod. This guide replaces the Forge 1.20.1 loader guide; Git history retains the old implementation and its debugging notes.
+Boxy 2.x is an ordinary **NeoForge 1.21.1 / Java 21** addon distributed as one Jar-in-Jar artifact with an isolated pre-mod-discovery bootstrap for automatic Voxy setup. Voxy is a separate, unmodified native mod. This guide replaces the Forge 1.20.1 loader guide; Git history retains the old implementation and its debugging notes.
 
-There is no service-layer Boxy module, Fabric facade, bytecode remapper, synthetic Voxy entrypoint, Mixin Transmogrifier, shader-asset copying, SRG mapping corpus, or nested game-layer bundle.
+There is no service-layer Boxy module, Fabric facade, bytecode remapper, synthetic Voxy entrypoint, Mixin Transmogrifier, shader-asset copying, SRG mapping corpus, or nested game-layer bundle. The only shipped service is the isolated bootstrap in the outer distribution jar; the actual Boxy NeoForge mod remains a separate nested Jar-in-Jar path.
 
 `BoxyVss` registers payload handlers and server services. `BoxyClient` is a separate client-only entrypoint. `src/main/resources/META-INF/neoforge.mods.toml` and `boxy.mixins.json` describe the actual shipped mod. Dedicated servers need no renderer dependencies.
 
@@ -104,11 +104,11 @@ Use official Mojmap names for Minecraft targets. No hand-SRG names or runtime se
 
 Voxy-specific mixins remain in Boxy's own config. Do not modify Voxy's mixin JSON or jar. Upstream already supplies `/voxy`, native config, and its NeoForge Chunky integration.
 
-For development, full Sodium/Voxy/Iris jars are installed into `run/client/mods`. Sodium's distribution has an early graphics bootstrap/service locator: adding that outer jar as a regular ModDev runtime classpath mod can drop its nested implementation. The solution is normal native mod discovery, **not** unpacking/rewriting Sodium or introducing another loader shim.
+For development, full Sodium/Voxy/Iris jars and an internal bootstrap-only companion are installed into `run/client/mods`; the core source set remains the loaded development mod. Sodium's distribution has an early graphics bootstrap/service locator: adding that outer jar as a regular ModDev runtime classpath mod can drop its nested implementation. The production solution uses NeoForge Jar-in-Jar metadata, **not** unpacking/rewriting Sodium or putting the service and mod metadata on the same physical path. ModLauncher claims the outer service path while NeoForge discovers the nested core path.
 
 ## Verification
 
-See README for commands. `test` runs deterministic request-tracking regressions. `verifyProductionJar` rejects embedded Voxy, old loader packages, service registrations, nested legacy bundles, and smoke-test classes. `-Psmoke` defines isolated `runSmokeClient`/`runSmokeServer` tasks with a separate, non-production test mod. It never alters normal `runClient`/`runServer` loaded mods, JVM arguments, or directories.
+See README for commands. `test` runs deterministic request-tracking regressions. `verifyProductionJar` rejects embedded Voxy, old loader packages, service registrations, nested legacy bundles, bootstrap code, and smoke-test classes; `verifyBootstrapJar` checks the outer service and nested core artifact. `-Psmoke` defines isolated `runSmokeClient`/`runSmokeServer` tasks with a separate, non-production test mod. It never alters normal `runClient`/`runServer` loaded mods, JVM arguments, or directories.
 
 `verifyClientLaunch` regenerates `build/moddev/clientRunVmArgs.txt` and rejects smoke properties or geometry-memory overrides there. Smoke runs generate their own `smokeClientRunVmArgs.txt`. This separation matters for IDE launches that consume the generated files without reevaluating Gradle: using the same run name previously leaked the 256 MiB test cap into normal play. The selected Voxy's `NodeCleaner` starts eviction below 256,000,000 free bytes, so that cap left only about 12 MiB for geometry and caused continuous eviction/rebuild flicker. Smoke tests now use 1 GiB by default; normal play retains Voxy's native allocation policy.
 

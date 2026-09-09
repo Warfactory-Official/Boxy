@@ -7,6 +7,11 @@ version = mod_version
 group = mod_group_id
 base.archivesName = mod_id
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+sourceSets {
+    bootstrap {
+        compileClasspath += sourceSets.main.compileClasspath
+    }
+}
 def smokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
         (providers.gradleProperty('downloader_smoke').isPresent() ? 'run/downloader-smoke' :
         (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client'))
@@ -57,8 +62,66 @@ dependencies {
 
 // Install complete, unmodified native distributions through NeoForge's normal mods-directory discovery.
 // Sodium's early service locator is not a game-layer classpath dependency.
+tasks.named('jar', Jar) {
+    archiveBaseName = 'boxy-core'
+    destinationDirectory = layout.buildDirectory.dir('intermediates/core')
+    exclude 'META-INF/services/cpw.mods.modlauncher.api.ITransformationService'
+    exclude 'com/golem/boxy/bootstrap/**'
+}
+def coreJarFile = tasks.named('jar', Jar).flatMap { it.archiveFile }
+
+def bootstrapServiceJar = tasks.register('bootstrapServiceJar', Jar) {
+    archiveBaseName = 'boxy-bootstrap-service'
+    destinationDirectory = layout.buildDirectory.dir('intermediates/bootstrap')
+    from sourceSets.bootstrap.output
+    manifest {
+        attributes 'Automatic-Module-Name': 'com.golem.boxy.bootstrap'
+    }
+}
+
+def combinedMetadata = layout.buildDirectory.file('generated/combinedJarjar/metadata.json')
+def writeCombinedMetadata = tasks.register('writeCombinedJarjarMetadata') {
+    dependsOn 'jar'
+    outputs.file combinedMetadata
+    doLast {
+        def metadataFile = combinedMetadata.get().asFile
+        metadataFile.parentFile.mkdirs()
+        metadataFile.text = """{
+  \"jars\": [
+    {
+      \"identifier\": {
+        \"group\": \"com.golem.boxy\",
+        \"artifact\": \"boxy-core\"
+      },
+      \"version\": {
+        \"range\": \"[${project.version},)\",
+        \"artifactVersion\": \"${project.version}\"
+      },
+      \"path\": \"META-INF/jarjar/${tasks.jar.archiveFile.get().asFile.name}\",
+      \"isObfuscated\": false
+    }
+  ]
+}
+"""
+    }
+}
+
+def bootstrapJar = tasks.register('bootstrapJar', Jar) {
+    archiveBaseName = 'boxy'
+    from sourceSets.bootstrap.output
+    from(coreJarFile) {
+        into 'META-INF/jarjar'
+    }
+    from(writeCombinedMetadata) {
+        into 'META-INF/jarjar'
+        rename { 'metadata.json' }
+    }
+}
+tasks.named('assemble') { dependsOn bootstrapJar }
+
 tasks.register('stageClientMods', Copy) {
     from configurations.nativeClientMods
+    from bootstrapServiceJar
     into 'run/client/mods'
 }
 tasks.named('runClient') { dependsOn 'stageClientMods' }
@@ -106,8 +169,8 @@ tasks.register('verifyProductionJar') {
                 if (entry.name.startsWith('me/cortex/voxy/') || entry.name.startsWith('net/fabricmc/')
                         || entry.name.startsWith('com/golem/boxy/loader/') || entry.name.startsWith('com/golem/boxy/libs/')
                         || entry.name.startsWith('com/golem/boxy/smoke/')
-                        || (!entry.directory && entry.name.startsWith('META-INF/services/')
-                        && entry.name != 'META-INF/services/cpw.mods.modlauncher.api.ITransformationService')
+                        || entry.name.startsWith('com/golem/boxy/bootstrap/')
+                        || entry.name.startsWith('META-INF/services/')
                         || entry.name.endsWith('.libzip') || entry.name == 'fabric-mixin.jar') {
                     throw new GradleException("Unexpected bundled code: ${entry.name}")
                 }
@@ -116,7 +179,54 @@ tasks.register('verifyProductionJar') {
         logger.lifecycle("Verified native addon artifact: ${artifact.name}")
     }
 }
+tasks.register('verifyBootstrapJar') {
+    dependsOn bootstrapJar
+    inputs.file bootstrapJar.flatMap { it.archiveFile }
+    doLast {
+        def artifact = bootstrapJar.get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(artifact).withCloseable { zip ->
+            def servicePath = 'META-INF/services/cpw.mods.modlauncher.api.ITransformationService'
+            def service = zip.getEntry(servicePath)
+            if (service == null) throw new GradleException("Missing ${servicePath}")
+            def provider = new String(zip.getInputStream(service).bytes, java.nio.charset.StandardCharsets.UTF_8).trim()
+            if (provider != 'com.golem.boxy.bootstrap.EarlyVoxyDownloader') {
+                throw new GradleException("Unexpected bootstrap service provider: ${provider}")
+            }
+            if (zip.getEntry('META-INF/jarjar/metadata.json') == null) {
+                throw new GradleException('Missing embedded Boxy Jar-in-Jar metadata')
+            }
+            def nestedCore = zip.entries().find { it.name.startsWith('META-INF/jarjar/boxy-core-') && it.name.endsWith('.jar') }
+            if (nestedCore == null) throw new GradleException('Missing embedded Boxy core jar')
+            def nestedNames = []
+            new java.util.jar.JarInputStream(zip.getInputStream(nestedCore)).withCloseable { nested ->
+                java.util.jar.JarEntry entry
+                while ((entry = nested.nextJarEntry) != null) nestedNames << entry.name
+            }
+            ['META-INF/neoforge.mods.toml', 'boxy.mixins.json'].each {
+                if (!nestedNames.contains(it)) throw new GradleException("Embedded core is missing ${it}")
+            }
+            if (nestedNames.any { it.startsWith('META-INF/services/') || it.startsWith('com/golem/boxy/bootstrap/') }) {
+                throw new GradleException('Embedded core contains bootstrap service content')
+            }
+            ['com/golem/boxy/bootstrap/EarlyVoxyDownloader.class',
+             'com/golem/boxy/bootstrap/EarlyVoxyDownloader$Progress.class'].each {
+                if (zip.getEntry(it) == null) throw new GradleException("Missing ${it}")
+            }
+            zip.entries().each { entry ->
+                if (entry.name == 'META-INF/neoforge.mods.toml'
+                        || entry.name.startsWith('com/golem/boxy/vss/')
+                        || entry.name.startsWith('com/golem/boxy/smoke/')
+                        || entry.name.startsWith('me/cortex/voxy/')
+                        || entry.name.startsWith('net/fabricmc/')) {
+                    throw new GradleException("Unexpected bootstrap content: ${entry.name}")
+                }
+            }
+        }
+        logger.lifecycle("Verified bootstrap artifact: ${artifact.name}")
+    }
+}
 tasks.named('check') { dependsOn 'verifyProductionJar' }
+tasks.named('check') { dependsOn 'verifyBootstrapJar' }
 
 // IDE launches also consume this generated argument file. Tests must never contaminate it.
 tasks.register('verifyClientLaunch') {
@@ -150,6 +260,7 @@ if (providers.gradleProperty('smoke').isPresent()) {
             doFirst { delete file("${smokeClientDirectory}/mods") }
         }
         from configurations.nativeClientMods
+        from bootstrapServiceJar
         if (providers.gradleProperty('downloader_smoke').isPresent()) {
             exclude { it.file.name.toLowerCase(Locale.ROOT).contains('voxy') }
         }
@@ -211,8 +322,13 @@ if (providers.gradleProperty('smoke').isPresent()) {
     tasks.named('runSmokeClient') {
         dependsOn 'prepareClientSmokeWorld', 'stageSmokeClientMods'
         doLast {
-            if (!file("${smokeClientDirectory}/logs/latest.log").text.contains('BOXY_CLIENT_SMOKE_OK')) {
+            def log = file("${smokeClientDirectory}/logs/latest.log").text
+            if (!log.contains('BOXY_CLIENT_SMOKE_OK')) {
                 throw new GradleException("Client smoke checks did not complete; inspect ${smokeClientDirectory}/logs/latest.log.")
+            }
+            if (providers.gradleProperty('downloader_smoke').isPresent()
+                    && (!log.contains('(boxy)') || !log.contains('(voxy)'))) {
+                throw new GradleException("Downloader smoke did not discover both Boxy and Voxy; inspect ${smokeClientDirectory}/logs/latest.log.")
             }
         }
     }
