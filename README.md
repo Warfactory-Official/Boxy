@@ -39,7 +39,7 @@ This is a clean protocol break from Forge Boxy and original Voxy Server Side. Ol
 
 ### Voxy Dependency Bootstrap
 
-On a client launch, the outer `boxy` jar runs a ModLauncher early service before NeoForge validates the mod list. If no valid Voxy jar is already present in the instance `mods` folder, it downloads the official Voxy release into that folder using an atomic temporary file. The Boxy NeoForge mod is embedded as a separate Jar-in-Jar path, so NeoForge can discover it even though ModLauncher claims the outer path. A small `Setting up dependencies` window shows progress when a graphical desktop is available; headless/server launches log progress and do not download the client-only dependency. The launcher then discovers Voxy during the same startup.
+On a client launch, the outer `boxy` jar runs a ModLauncher early service before NeoForge validates the mod list. If no valid Voxy jar is already present in the instance `mods` folder, it downloads the official Voxy release into that folder using an atomic temporary file. The Boxy NeoForge mod is embedded as a separate Jar-in-Jar path and submitted by a Sodium-style early mod locator, so NeoForge can discover it even though ModLauncher claims the outer path. A small `Setting up dependencies` window shows progress when a graphical desktop is available; headless/server launches log progress and do not download the client-only dependency. The launcher then discovers Voxy during the same startup.
 
 The download source is the official release URL:
 

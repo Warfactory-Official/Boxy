@@ -13,8 +13,9 @@ sourceSets {
     }
 }
 def smokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
+        (providers.gradleProperty('locator_smoke').isPresent() ? 'run/locator-smoke' :
         (providers.gradleProperty('downloader_smoke').isPresent() ? 'run/downloader-smoke' :
-        (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client'))
+        (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client')))
 def smokeWorldName = providers.gradleProperty('stability_world_source').isPresent() ? 'boxy-stability-snapshot' : 'boxy-migration-smoke'
 
 repositories {
@@ -66,6 +67,7 @@ tasks.named('jar', Jar) {
     archiveBaseName = 'boxy-core'
     destinationDirectory = layout.buildDirectory.dir('intermediates/core')
     exclude 'META-INF/services/cpw.mods.modlauncher.api.ITransformationService'
+    exclude 'META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator'
     exclude 'com/golem/boxy/bootstrap/**'
 }
 def coreJarFile = tasks.named('jar', Jar).flatMap { it.archiveFile }
@@ -75,7 +77,7 @@ def bootstrapServiceJar = tasks.register('bootstrapServiceJar', Jar) {
     destinationDirectory = layout.buildDirectory.dir('intermediates/bootstrap')
     from sourceSets.bootstrap.output
     manifest {
-        attributes 'Automatic-Module-Name': 'com.golem.boxy.bootstrap'
+        attributes 'Automatic-Module-Name': 'boxy_service', 'FMLModType': 'LIBRARY'
     }
 }
 
@@ -115,6 +117,9 @@ def bootstrapJar = tasks.register('bootstrapJar', Jar) {
     from(writeCombinedMetadata) {
         into 'META-INF/jarjar'
         rename { 'metadata.json' }
+    }
+    manifest {
+        attributes 'Automatic-Module-Name': 'boxy_service', 'FMLModType': 'LIBRARY'
     }
 }
 tasks.named('assemble') { dependsOn bootstrapJar }
@@ -192,6 +197,13 @@ tasks.register('verifyBootstrapJar') {
             if (provider != 'com.golem.boxy.bootstrap.EarlyVoxyDownloader') {
                 throw new GradleException("Unexpected bootstrap service provider: ${provider}")
             }
+            def locatorPath = 'META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator'
+            def locatorService = zip.getEntry(locatorPath)
+            if (locatorService == null) throw new GradleException("Missing ${locatorPath}")
+            def locator = new String(zip.getInputStream(locatorService).bytes, java.nio.charset.StandardCharsets.UTF_8).trim()
+            if (locator != 'com.golem.boxy.bootstrap.BoxyServiceModLocator') {
+                throw new GradleException("Unexpected Boxy mod locator: ${locator}")
+            }
             if (zip.getEntry('META-INF/jarjar/metadata.json') == null) {
                 throw new GradleException('Missing embedded Boxy Jar-in-Jar metadata')
             }
@@ -209,7 +221,8 @@ tasks.register('verifyBootstrapJar') {
                 throw new GradleException('Embedded core contains bootstrap service content')
             }
             ['com/golem/boxy/bootstrap/EarlyVoxyDownloader.class',
-             'com/golem/boxy/bootstrap/EarlyVoxyDownloader$Progress.class'].each {
+             'com/golem/boxy/bootstrap/EarlyVoxyDownloader$Progress.class',
+             'com/golem/boxy/bootstrap/BoxyServiceModLocator.class'].each {
                 if (zip.getEntry(it) == null) throw new GradleException("Missing ${it}")
             }
             zip.entries().each { entry ->
@@ -249,19 +262,24 @@ if (providers.gradleProperty('smoke').isPresent()) {
     sourceSets {
         smoke {
             compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
-            runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+            if (providers.gradleProperty('locator_smoke').isPresent()) {
+                runtimeClasspath += sourceSets.main.runtimeClasspath - sourceSets.main.output
+            } else {
+                runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+            }
         }
     }
     neoForge.mods {
         boxy_smoke { sourceSet sourceSets.smoke }
     }
     tasks.register('stageSmokeClientMods', Copy) {
-        if (providers.gradleProperty('downloader_smoke').isPresent()) {
+        def locatorSmoke = providers.gradleProperty('locator_smoke').isPresent()
+        if (providers.gradleProperty('downloader_smoke').isPresent() || locatorSmoke) {
             doFirst { delete file("${smokeClientDirectory}/mods") }
         }
         from configurations.nativeClientMods
-        from bootstrapServiceJar
-        if (providers.gradleProperty('downloader_smoke').isPresent()) {
+        from(locatorSmoke ? bootstrapJar : bootstrapServiceJar)
+        if (providers.gradleProperty('downloader_smoke').isPresent() || locatorSmoke) {
             exclude { it.file.name.toLowerCase(Locale.ROOT).contains('voxy') }
         }
         if (providers.gradleProperty('hbm_smoke').isPresent()) {
@@ -297,7 +315,9 @@ if (providers.gradleProperty('smoke').isPresent()) {
             disableIdeRun()
             gameDirectory = file(smokeClientDirectory)
             sourceSet = sourceSets.smoke
-            loadedMods.set([neoForge.mods.boxy, neoForge.mods.boxy_smoke])
+            loadedMods.set(providers.gradleProperty('locator_smoke').isPresent()
+                    ? [neoForge.mods.boxy_smoke]
+                    : [neoForge.mods.boxy, neoForge.mods.boxy_smoke])
             // Voxy reserves 256,000,000 free bytes before eviction; 256 MiB total causes constant churn.
             systemProperty 'voxy.geometryBufferSizeOverrideMB', providers.gradleProperty('stability_geometry_mb').orElse('1024').get()
             systemProperty 'boxy.smokeDimensions', providers.gradleProperty('dimension_smoke').isPresent().toString()
@@ -326,7 +346,8 @@ if (providers.gradleProperty('smoke').isPresent()) {
             if (!log.contains('BOXY_CLIENT_SMOKE_OK')) {
                 throw new GradleException("Client smoke checks did not complete; inspect ${smokeClientDirectory}/logs/latest.log.")
             }
-            if (providers.gradleProperty('downloader_smoke').isPresent()
+            if ((providers.gradleProperty('downloader_smoke').isPresent()
+                    || providers.gradleProperty('locator_smoke').isPresent())
                     && (!log.contains('(boxy)') || !log.contains('(voxy)'))) {
                 throw new GradleException("Downloader smoke did not discover both Boxy and Voxy; inspect ${smokeClientDirectory}/logs/latest.log.")
             }
