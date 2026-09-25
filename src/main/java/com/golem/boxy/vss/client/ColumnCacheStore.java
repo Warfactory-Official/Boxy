@@ -136,6 +136,11 @@ public class ColumnCacheStore {
       }
    }
 
+   public static void clearForServerAsync(String serverAddress) {
+      // Use the same queue as load/save so an older save cannot resurrect a flushed cache.
+      IO_EXECUTOR.execute(() -> clearForServer(serverAddress));
+   }
+
    public static void clearAll() {
       if (Files.exists(CACHE_DIR)) {
          try (DirectoryStream<Path> servers = Files.newDirectoryStream(CACHE_DIR)) {

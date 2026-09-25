@@ -100,6 +100,9 @@ public final class ClientNetworking {
     }
 
     private static void handleSessionConfig(SessionConfigS2CPayload payload) {
+        if (requestManager != null) requestManager.disconnect();
+        requestManager = null;
+        columnProcessor.shutdown();
         VSSLogger.info("Server session config received (protocol v" + payload.protocolVersion()
                 + ", LOD distance: " + payload.lodDistanceChunks() + " chunks, enabled: " + payload.enabled()
                 + ", syncRate: " + payload.syncOnLoadRateLimitPerPlayer() + ")");
@@ -148,6 +151,8 @@ public final class ClientNetworking {
     }
 
     private static void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
+        if (requestManager != null) requestManager.disconnect();
+        columnProcessor.shutdown();
         serverEnabled = false;
         serverLodDistance = 0;
         requestManager = null;
@@ -166,7 +171,6 @@ public final class ClientNetworking {
         LodRequestManager manager = requestManager;
         if (manager != null) {
             manager.disconnect();
-            manager.saveCache();
         }
         columnProcessor.shutdown();
         columnProcessor.resetStats();

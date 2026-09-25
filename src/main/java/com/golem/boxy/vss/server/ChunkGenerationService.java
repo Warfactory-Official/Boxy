@@ -76,6 +76,10 @@ public class ChunkGenerationService {
     }
 
     public List<GenerationReadyData> tick() {
+        return tick(Long.MAX_VALUE);
+    }
+
+    public List<GenerationReadyData> tick(long deadlineNanos) {
         if (this.active.isEmpty()) {
             return List.of();
         }
@@ -97,10 +101,12 @@ public class ChunkGenerationService {
                 this.totalTimeouts++;
             } else {
                 LevelChunk chunk = gen.level.getChunkSource().getChunkNow(gen.pos.x, gen.pos.z);
-                if (chunk != null) {
+                if (chunk != null && System.nanoTime() < deadlineNanos) {
                     try {
                         long columnTimestamp = VSSConstants.epochSeconds();
-                        LoadedColumnData columnData = SectionSerializer.serializeColumn(gen.level, chunk, gen.pos.x, gen.pos.z);
+                        ColumnSnapshot snapshot = ColumnSnapshotter.snapshot(gen.level.getServer(), gen.level, chunk, gen.pos.x, gen.pos.z);
+                        LoadedColumnData columnData = LoadedColumnData.deferred(gen.pos.x, gen.pos.z,
+                                () -> ColumnSnapshotter.serialize(snapshot));
                         for (GenerationCallback cb : gen.callbacks) {
                             if (ready == null) {
                                 ready = new ArrayList<>();

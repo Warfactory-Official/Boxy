@@ -63,8 +63,11 @@ public final class FrozenChunkLoader {
         MinecraftServer server = event.getServer();
         boolean typesChanged = TrackedEntityTypes.refreshServerTypes();
         for (ServerLevel level : server.getAllLevels()) {
-            // Also discover already-loaded entities after a whitelist change.
-            if (typesChanged || server.getTickCount() % 20 == 0) {
+            // EntityJoinLevelEvent and EnteringSection maintain the index as entities load and move.
+            // A full scan is needed when the whitelist changes (and on the first call, when
+            // refreshServerTypes resolves the configured list). Keep a slow safety sweep for third-party
+            // entity code that bypasses normal lifecycle events, rather than scanning every second.
+            if (typesChanged || server.getTickCount() % 200 == 0) {
                 for (Entity entity : level.getAllEntities()) DiscoveredEntities.get(level).observe(entity);
             }
             DiscoveredEntities.get(level).refresh(level);

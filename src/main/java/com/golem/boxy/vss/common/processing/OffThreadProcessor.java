@@ -60,10 +60,6 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       this.generationAvailable = generationAvailable;
       this.dataDir = dataDir;
       this.timestampCache = new ColumnTimestampCache(ColumnTimestampCache.mbToEntries(perDimensionTimestampCacheSizeMB));
-      if (dataDir != null) {
-         this.timestampCache.load(dataDir);
-      }
-
       this.ctx = new ProcessingContext(this.sendActions, this.generationTicketRequests, new ProcessingDiagnostics(), new SequenceCounter(), bytesCache);
       this.requestRouter = new IncomingRequestRouter<>(this.timestampCache, this.dedupTracker, diskReadingAvailable, generationAvailable, this.ctx);
       this.processingThread = new Thread(this::processingLoop, "VSS Processing Thread");
@@ -160,6 +156,21 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    );
 
    private void processingLoop() {
+      // The constructor runs on the server thread. Load before routing, on this cache's owner.
+      if (this.dataDir != null) this.timestampCache.load(this.dataDir);
+      try {
+         this.runCycles();
+      } finally {
+         // Preserve save ordering with periodic writes, and never inspect a running worker's maps
+         // from shutdown's caller (the join can time out).
+         if (this.dataDir != null) {
+            ColumnTimestampCache finalSnapshot = this.timestampCache.snapshotForSave();
+            SAVE_EXECUTOR.execute(() -> finalSnapshot.save(this.dataDir));
+         }
+      }
+   }
+
+   private void runCycles() {
       while (true) {
          TickSnapshot snapshot;
          synchronized (this.snapshotLock) {
@@ -426,11 +437,16 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
             state.getRateLimiters().generation().release();
             if (playerData != null) {
                String dimension = playerData.dimension();
-               boolean sent = this.compressAndEnqueueLoaded(
-                  state, genReady.columnData(), genReady.requestId(), genReady.columnTimestamp(), genReady.submissionOrder(), dimension
-               );
-               if (!sent) {
-                  this.sendActions.add(new SendAction.ColumnUpToDate(genReady.playerUuid(), genReady.requestId()));
+               try {
+                  boolean sent = this.compressAndEnqueueLoaded(
+                     state, genReady.columnData(), genReady.requestId(), genReady.columnTimestamp(), genReady.submissionOrder(), dimension
+                  );
+                  if (!sent) {
+                     this.sendActions.add(new SendAction.ColumnUpToDate(genReady.playerUuid(), genReady.requestId()));
+                  }
+               } catch (Exception e) {
+                  VSSLogger.error("Failed to encode generated column", e);
+                  this.sendActions.add(new SendAction.RateLimited(genReady.playerUuid(), genReady.requestId()));
                }
 
                this.ctx.diagnostics().incrementGenDrained();
@@ -460,9 +476,6 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
          Thread.currentThread().interrupt();
       }
 
-      if (this.dataDir != null) {
-         this.timestampCache.save(this.dataDir);
-      }
    }
 
    public record GenerationTicketRequest(UUID playerUuid, int requestId, int cx, int cz, long submissionOrder, String dimension) {

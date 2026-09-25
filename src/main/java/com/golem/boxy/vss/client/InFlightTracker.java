@@ -87,6 +87,10 @@ class InFlightTracker {
     *  scan at that ring — a timed-out column is no longer in flight and must be re-walked to be re-requested
     *  (the scan no longer restarts from ring 0 on every chunk move, which used to mask this). */
    void timeoutSweep(long thresholdNanos, LongConsumer timedOutCallback) {
+      timeoutSweep(thresholdNanos, timedOutCallback, id -> {});
+   }
+
+   void timeoutSweep(long thresholdNanos, LongConsumer timedOutCallback, IntConsumer cancelCallback) {
       long now = System.nanoTime();
       ObjectIterator<Entry> iter = this.pendingRequests.long2LongEntrySet().iterator();
 
@@ -94,7 +98,8 @@ class InFlightTracker {
          Entry entry = (Entry)iter.next();
          if (now - entry.getLongValue() > thresholdNanos) {
             long pos = entry.getLongKey();
-            this.removeFromSecondaryMaps(pos);
+            int requestId = this.removeFromSecondaryMaps(pos);
+            if (requestId != -1) cancelCallback.accept(requestId);
             this.generationPositions.remove(pos);
             iter.remove();
             timedOutCallback.accept(pos);

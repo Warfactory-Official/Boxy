@@ -179,7 +179,7 @@ public class RequestProcessingService {
         // pipeline draining, whereas new probes only create more work.
         this.drainLiveSerializeRequests(deadlineNanos);
         this.dirtyReloads.tick(deadlineNanos);
-        List<GenerationReadyData> generationReady = this.tickGenerationService();
+        List<GenerationReadyData> generationReady = this.tickGenerationService(deadlineNanos);
         LifecycleResult lifecycle = this.processPlayerLifecycle(config, generationReady, deadlineNanos);
         if (lifecycle.toRemove != null) {
             for (UUID uuid : lifecycle.toRemove) {
@@ -194,8 +194,8 @@ public class RequestProcessingService {
         this.tickDiagnosticsLog(config);
     }
 
-    private List<GenerationReadyData> tickGenerationService() {
-        return this.generationService == null ? List.of() : this.generationService.tick();
+    private List<GenerationReadyData> tickGenerationService(long deadlineNanos) {
+        return this.generationService == null ? List.of() : this.generationService.tick(deadlineNanos);
     }
 
     private LifecycleResult processPlayerLifecycle(VSSServerConfig config, List<GenerationReadyData> generationReady, long deadlineNanos) {
@@ -260,7 +260,7 @@ public class RequestProcessingService {
                 String dimension = this.dimensionStringCache.computeIfAbsent(level, l -> l.dimension().location().toString());
                 this.offThreadProcessor.updateDimensionContext(dimension, level);
                 int probedCount = 0;
-                if (!dimensionChanged) {
+                if (!dimensionChanged && state.getIncomingRequestCount() > 0) {
                     LongOpenHashSet skipPositions = genReadyPositions != null ? genReadyPositions.get(player.getUUID()) : null;
                     LongOpenHashSet loaded = new LongOpenHashSet();
                     probedCount = this.probeLoadedChunks(state, level, loaded, skipPositions, deadlineNanos);

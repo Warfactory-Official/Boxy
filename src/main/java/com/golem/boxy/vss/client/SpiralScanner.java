@@ -1,14 +1,12 @@
 package com.golem.boxy.vss.client;
 
 import com.golem.boxy.vss.common.PositionUtil;
-import com.golem.boxy.vss.config.VSSClientConfig;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2LongMap.Entry;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
-import java.util.OptionalInt;
 import java.util.function.LongPredicate;
 
 class SpiralScanner {
@@ -21,6 +19,7 @@ class SpiralScanner {
    private int lastSyncQueued;
    private int lastGenQueued;
    private int cachedVoxyDistance = -1;
+   private int clientDistance;
    private int voxyDistanceStaleness = 0;
    private long[] posBuf = new long[0];
    private long[] tsBuf = new long[0];
@@ -229,7 +228,6 @@ class SpiralScanner {
 
    int getEffectiveLodDistance(SessionConfigS2CPayload sessionConfig) {
       int serverDistance = sessionConfig.lodDistanceChunks();
-      int clientDistance = VSSClientConfig.CONFIG.lodDistanceChunks;
       int effective;
       if (clientDistance > 0) {
          effective = Math.min(clientDistance, serverDistance);
@@ -246,13 +244,12 @@ class SpiralScanner {
    }
 
    private int getCachedVoxyDistance() {
-      if (++this.voxyDistanceStaleness >= 20) {
-         this.voxyDistanceStaleness = 0;
-         OptionalInt voxyDistance = VoxyClientBridge.getViewDistanceChunks();
-         this.cachedVoxyDistance = voxyDistance.isPresent() ? voxyDistance.getAsInt() : -1;
-      }
-
       return this.cachedVoxyDistance;
+   }
+
+   void setDistances(int clientDistance, int voxyDistance) {
+      this.clientDistance = clientDistance;
+      this.cachedVoxyDistance = voxyDistance;
    }
 
    int getPruneDistance(SessionConfigS2CPayload sessionConfig) {
