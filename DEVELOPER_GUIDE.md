@@ -23,7 +23,7 @@ Dependency baseline: NeoForge 21.1.248, Voxy 0.2.15-beta from the selected multi
 | `server/SectionSerializer`, `ColumnSnapshotter`, `LiveColumnSerializer` | Live section serialization and immutable snapshots |
 | `server/ChunkGenerationService` | Bounded on-demand FULL chunk tickets |
 | `server/FrozenChunkLoader` | Optional player-owned FULL/non-ticking tickets |
-| `client/LodRequestManager`, `SpiralScanner`, `InFlightTracker` | Scan, retry, request validation and timestamp cache |
+| `client/LodRequestManager`, `LodRequestPlanner`, `SpiralScanner`, `InFlightTracker` | Main-thread boundary plus worker-side scan, retry, request validation and timestamp cache |
 | `client/ClientColumnProcessor`, `VoxyClientBridge` | Off-thread decode, main-thread Voxy ingestion |
 | `client/ClientEntitySync`, `DistantEntityTicker`, `DistantEntityServerPos` | Server entity config, distant movement and vehicle pinning |
 | `client/DistantEntityDepthFix`, `VoxyLodDepthJoin`, `DepthRenderState` | Entity depth precision and LOD depth join for both pipelines |
@@ -52,6 +52,8 @@ World access, ticket operations, orchestration, and payload dispatch handlers ar
 Server tick processing drains completed work, probes loaded chunks, snapshots live data, dispatches workers, polls generation, and flushes bounded player queues. Disk reads use public `ChunkStorage.read(ChunkPos)`, inherited by `ChunkMap`; no reflection or access transformer is needed.
 
 `ColumnSnapshotter` copies live block states and lighting on the server thread. It preserves the section's actual `nonEmptyBlockCount` via an accessor rather than recomputing it. A worker then emits the section byte layout. Do not move live palette copying to a worker or publish mutable tick maps.
+
+On-demand generated chunks follow the same boundary: the server thread acquires the bounded FULL ticket and copies the live section state into an immutable `ColumnSnapshot`; the processing worker performs the wire encoding. Client LOD planning, cache pruning, and request bookkeeping run on the dedicated `Boxy-LOD-Planner` worker. The client thread only samples current player/chunk state, dispatches packets, validates responses, and ingests decoded columns into Voxy.
 
 Live dirty detection covers ordinary `ServerLevel.sendBlockUpdated` notifications and `ChunkAccess.setUnsaved(true)` on server `LevelChunk` instances. The latter catches bulk section edits such as HBM crater carving and fallout that bypass ordinary block notifications. Repeated true calls are intentional: a chunk can be edited again after a dirty broadcast but before autosave. Cache invalidations are coalesced once per dimension/column per drain window. The bulk hook also sees non-terrain dirty notifications (for example block-entity persistence); this favors correctness but may increase broadcast traffic in machine-heavy worlds. ProtoChunk generation and client chunks are excluded.
 
