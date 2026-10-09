@@ -17,6 +17,45 @@ final class DirtyDeliverySmoke {
     private static int phase;
     private static int ticks;
     private static volatile Throwable failure;
+    /** Reflection must run on LodRequestPlanner's single worker; the client thread only polls completion. */
+    private static java.util.concurrent.Future<?> timestampTask;
+    private static Object timestampResult;
+
+    private static java.util.concurrent.Future<?> timestampTask(Object manager, long position, boolean remove) {
+        try {
+            var plannerField = manager.getClass().getDeclaredField("planner");
+            plannerField.setAccessible(true);
+            Object planner = plannerField.get(manager);
+            var executorField = manager.getClass().getDeclaredField("executor");
+            executorField.setAccessible(true);
+            var executor = (java.util.concurrent.ExecutorService) executorField.get(manager);
+            return executor.submit(() -> {
+                var timestampsField = planner.getClass().getDeclaredField("columnTimestamps");
+                timestampsField.setAccessible(true);
+                var timestamps = (it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap) timestampsField.get(planner);
+                if (remove) {
+                    timestamps.remove(position);
+                    return null;
+                }
+                return timestamps.get(position);
+            });
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Unable to schedule planner timestamp fixture", e);
+        }
+    }
+
+    /** Returns false while pending; get() is only called after isDone(), so the client thread never blocks. */
+    private static boolean pollTimestampTask() {
+        if (timestampTask == null || !timestampTask.isDone()) return false;
+        try {
+            timestampResult = timestampTask.get();
+            timestampTask = null;
+            return true;
+        } catch (Exception e) {
+            timestampTask = null;
+            throw new AssertionError("Planner timestamp fixture failed", e);
+        }
+    }
 
     static boolean check(Minecraft mc) {
         if (++ticks > 600) throw new AssertionError("Dirty terrain delivery timed out at phase " + phase);
@@ -26,12 +65,13 @@ final class DirtyDeliverySmoke {
         if (engine == null) return false;
         if (phase == 0) {
             // Native-ingested terrain need not have a VSS timestamp. Seed precisely that case.
-            try {
-                var manager = ClientNetworking.getRequestManager();
-                var field = manager.getClass().getDeclaredField("columnTimestamps");
-                field.setAccessible(true);
-                ((it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap) field.get(manager)).remove(PositionUtil.packPosition(2, 2));
-            } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+            var manager = ClientNetworking.getRequestManager();
+            if (manager == null) return false;
+            if (timestampTask == null) {
+                timestampTask = timestampTask(manager, PositionUtil.packPosition(2, 2), true);
+                return false;
+            }
+            if (!pollTimestampTask()) return false;
             var section = new LevelChunkSection(mc.level.registryAccess().registryOrThrow(Registries.BIOME));
             section.setBlockState(0, 0, 0, Blocks.STONE.defaultBlockState(), false);
             if (!VoxelIngestService.rawIngest(worldId, section, 2, 15, 2, null, null)) return false;
@@ -58,13 +98,14 @@ final class DirtyDeliverySmoke {
                 } catch (Throwable error) { failure = error; }
             });
         } else if (phase == 2 && air) {
-            try {
-                var manager = ClientNetworking.getRequestManager();
-                var field = manager.getClass().getDeclaredField("columnTimestamps");
-                field.setAccessible(true);
-                if (((it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap) field.get(manager))
-                        .get(PositionUtil.packPosition(2, 2)) <= 0) return false;
-            } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
+            var manager = ClientNetworking.getRequestManager();
+            if (manager == null) return false;
+            if (timestampTask == null) {
+                timestampTask = timestampTask(manager, PositionUtil.packPosition(2, 2), false);
+                return false;
+            }
+            if (!pollTimestampTask()) return false;
+            if (timestampResult == null || ((Long) timestampResult) <= 0L) return false;
             phase = 3;
             mc.getSingleplayerServer().execute(() -> {
                 var level = mc.getSingleplayerServer().overworld();

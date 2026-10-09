@@ -39,21 +39,20 @@ public final class EarlyVoxyDownloader implements ITransformationService {
 
     @Override
     public void initialize(IEnvironment environment) {
-    }
-
-    @Override
-    public void onLoad(IEnvironment environment, Set<String> otherServices) {
         String launchTarget = environment.getProperty(IEnvironment.Keys.LAUNCHTARGET.get()).orElse("");
         System.out.println("[Boxy] Dependency bootstrap launch target: " + launchTarget);
-        if (launchTarget.toLowerCase(Locale.ROOT).contains("server")) {
-            System.out.println("[Boxy] Skipping client-only Voxy download on a server launch");
-            return;
-        }
 
         Path gameDir = environment.getProperty(IEnvironment.Keys.GAMEDIR.get())
                 .orElseGet(() -> Path.of(System.getProperty("user.dir", ".")));
         System.out.println("[Boxy] Dependency bootstrap game directory: " + gameDir.toAbsolutePath().normalize());
         Path modsDir = gameDir.resolve("mods");
+
+        if (isServerOrDataLaunch(launchTarget)) {
+            System.out.println("[Boxy] Skipping client-only Voxy download on a server launch");
+            removeServerVoxy(modsDir);
+            return;
+        }
+
         try {
             Files.createDirectories(modsDir);
             if (containsVoxy(modsDir)) return;
@@ -61,6 +60,49 @@ public final class EarlyVoxyDownloader implements ITransformationService {
         } catch (Exception error) {
             throw new IllegalStateException("Boxy could not install Voxy. Check your internet connection or install Voxy manually in "
                     + modsDir, error);
+        }
+    }
+
+    @Override
+    public void onLoad(IEnvironment environment, Set<String> otherServices) {
+        // Command-line arguments and environment keys (LAUNCHTARGET, GAMEDIR) are only parsed
+        // by ModLauncher after onLoad(), so dependency verification executes during initialize().
+    }
+
+    private static boolean isServerOrDataLaunch(String launchTarget) {
+        if (launchTarget != null && !launchTarget.isEmpty()) {
+            String lower = launchTarget.toLowerCase(Locale.ROOT);
+            if (lower.contains("server") || lower.contains("data")) {
+                return true;
+            }
+        }
+        String sunCommand = System.getProperty("sun.java.command", "").toLowerCase(Locale.ROOT);
+        if (sunCommand.contains("forgeserver") || sunCommand.contains("server") || sunCommand.contains("forgedata")) {
+            return true;
+        }
+        return Boolean.getBoolean("boxy.skip_voxy_download") || Boolean.getBoolean("boxy.is_server");
+    }
+
+    private static void removeServerVoxy(Path modsDir) {
+        if (!Files.isDirectory(modsDir)) return;
+        try (var files = Files.list(modsDir)) {
+            files.filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar"))
+                    .filter(EarlyVoxyDownloader::isVoxyJar)
+                    .forEach(path -> {
+                        try {
+                            if (path.getFileName().toString().equalsIgnoreCase(FILE_NAME)) {
+                                Files.deleteIfExists(path);
+                                System.out.println("[Boxy] Removed client-only Voxy download from server mods directory: " + path.getFileName());
+                            } else {
+                                Path disabled = path.resolveSibling(path.getFileName().toString() + ".disabled");
+                                Files.move(path, disabled, StandardCopyOption.REPLACE_EXISTING);
+                                System.out.println("[Boxy] Disabled client-only Voxy jar on server to prevent LWJGL crash: " + path.getFileName() + " -> " + disabled.getFileName());
+                            }
+                        } catch (IOException e) {
+                            System.err.println("[Boxy] Warning: Failed to remove client-only Voxy jar from server mods: " + e.getMessage());
+                        }
+                    });
+        } catch (IOException ignored) {
         }
     }
 

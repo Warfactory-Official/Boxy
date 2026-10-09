@@ -13,6 +13,7 @@ import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, ReadResult extends ReadResultAccess> {
    private static final int SNAPSHOT_POLL_MS = 50;
@@ -30,6 +31,12 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
    private final ConcurrentLinkedQueue<UUID> droppedRemovedPlayers = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<UUID> droppedDimensionChanges = new ConcurrentLinkedQueue<>();
    private final ConcurrentLinkedQueue<OffThreadProcessor.LiveSerializeRequest> liveSerializeRequests = new ConcurrentLinkedQueue<>();
+   /**
+    * ConcurrentLinkedQueue.size() traverses the whole queue.  This queue is bounded by policy and is
+    * checked for every live-serialization request, so keep the depth explicitly instead of turning a
+    * busy server tick into an O(backlog) operation.
+    */
+   private final AtomicInteger liveSerializeQueueDepth = new AtomicInteger();
    private final Thread processingThread;
    private final ColumnTimestampCache timestampCache;
    private final SerializedColumnCache bytesCache;
@@ -107,7 +114,9 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
     * dropping one leaks the permit.
     */
    public OffThreadProcessor.LiveSerializeRequest pollLiveSerializeRequest() {
-      return this.liveSerializeRequests.poll();
+      OffThreadProcessor.LiveSerializeRequest request = this.liveSerializeRequests.poll();
+      if (request != null) this.liveSerializeQueueDepth.decrementAndGet();
+      return request;
    }
 
    private void requestLiveSerialize(UUID playerUuid, int requestId, String dimension, int cx, int cz, long submissionOrder) {
@@ -115,12 +124,20 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       // disk path instead. Falling back rather than dropping is mandatory — the caller already acquired a
       // syncOnLoad permit and registered a pending entry, and only a result releases them. Slightly staler
       // bytes (last autosave) is the acceptable cost; a leaked permit is not.
-      if (this.liveSerializeRequests.size() >= MAX_QUEUED_LIVE_SERIALIZE) {
+      if (!this.tryReserveLiveSerializeSlot()) {
           this.submitDiskRead(playerUuid, requestId, dimension, cx, cz, submissionOrder, true);
          return;
       }
 
       this.liveSerializeRequests.add(new OffThreadProcessor.LiveSerializeRequest(playerUuid, requestId, dimension, cx, cz, submissionOrder));
+   }
+
+   private boolean tryReserveLiveSerializeSlot() {
+      while (true) {
+         int current = this.liveSerializeQueueDepth.get();
+         if (current >= MAX_QUEUED_LIVE_SERIALIZE) return false;
+         if (this.liveSerializeQueueDepth.compareAndSet(current, current + 1)) return true;
+      }
    }
 
    public void invalidateTimestamps(String dimension, long[] positions) {

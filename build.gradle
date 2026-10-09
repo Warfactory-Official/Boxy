@@ -12,11 +12,14 @@ sourceSets {
         compileClasspath += sourceSets.main.compileClasspath
     }
 }
-def smokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
+def defaultSmokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
         (providers.gradleProperty('locator_smoke').isPresent() ? 'run/locator-smoke' :
         (providers.gradleProperty('downloader_smoke').isPresent() ? 'run/downloader-smoke' :
         (providers.gradleProperty('stability_smoke').isPresent() ? 'run/stability' : 'run/smoke-client')))
-def smokeWorldName = providers.gradleProperty('stability_world_source').isPresent() ? 'boxy-stability-snapshot' : 'boxy-migration-smoke'
+def smokeClientDirectory = providers.gradleProperty('perf').isPresent()
+        ? providers.gradleProperty('perf_game_dir').getOrElse(defaultSmokeClientDirectory) : defaultSmokeClientDirectory
+def smokeWorldName = providers.gradleProperty('smoke_world_name').getOrElse(
+        providers.gradleProperty('stability_world_source').isPresent() ? 'boxy-stability-snapshot' : 'boxy-migration-smoke')
 
 repositories {
     mavenCentral()
@@ -328,6 +331,19 @@ if (providers.gradleProperty('smoke').isPresent()) {
             systemProperty 'boxy.smokeDepthMode', providers.gradleProperty('occlusion_depth_mode').orElse('PRECISE').get()
             systemProperty 'boxy.smokeStability', providers.gradleProperty('stability_smoke').isPresent().toString()
             systemProperty 'boxy.smokeStabilityControl', providers.gradleProperty('stability_control').isPresent().toString()
+            // Profiling is opt-in.  These properties are intentionally absent from normal and
+            // ordinary smoke launches so the harness cannot change the default JVM or game behaviour.
+            if (providers.gradleProperty('perf').isPresent()) {
+                systemProperty 'boxy.perf', 'true'
+            }
+            def perfJfr = providers.gradleProperty('perf_jfr').orNull
+            if (perfJfr != null) {
+                jvmArguments.add("-XX:StartFlightRecording=filename=${file(perfJfr).absolutePath.replace('\\', '/')},settings=profile,dumponexit=true")
+            }
+            def perfGc = providers.gradleProperty('perf_gc').orNull
+            if (perfGc != null) {
+                jvmArguments.add("-Xlog:gc*:file=${file(perfGc).absolutePath.replace('\\', '/')}:time,uptime,level,tags:filecount=4,filesize=20M")
+            }
             programArguments.addAll('--quickPlaySingleplayer', smokeWorldName)
         }
         smokeServer {
@@ -336,11 +352,36 @@ if (providers.gradleProperty('smoke').isPresent()) {
             gameDirectory = file('run/smoke-server')
             sourceSet = sourceSets.smoke
             loadedMods.set([neoForge.mods.boxy, neoForge.mods.boxy_smoke])
+            if (providers.gradleProperty('perf').isPresent()) {
+                systemProperty 'boxy.perf', 'true'
+            }
+            def perfJfr = providers.gradleProperty('perf_jfr').orNull
+            if (perfJfr != null) {
+                jvmArguments.add("-XX:StartFlightRecording=filename=${file(perfJfr).absolutePath.replace('\\', '/')},settings=profile,dumponexit=true")
+            }
+            def perfGc = providers.gradleProperty('perf_gc').orNull
+            if (perfGc != null) {
+                jvmArguments.add("-Xlog:gc*:file=${file(perfGc).absolutePath.replace('\\', '/')}:time,uptime,level,tags:filecount=4,filesize=20M")
+            }
             programArguments.addAll('--nogui', '--world', 'boxy-migration-smoke')
         }
     }
     tasks.named('runSmokeClient') {
         dependsOn 'prepareClientSmokeWorld', 'stageSmokeClientMods'
+        doFirst {
+            if (providers.gradleProperty('perf').isPresent()) {
+                def optionsFile = file("${smokeClientDirectory}/options.txt")
+                def lines = optionsFile.isFile() ? optionsFile.readLines() : []
+                ['enableVsync': 'false', 'maxFps': '260', 'onboardAccessibility': 'false',
+                 'renderDistance': '4', 'simulationDistance': '5', 'pauseOnLostFocus': 'false'].each { key, value ->
+                    def index = lines.findIndexOf { it.startsWith("${key}:") }
+                    def setting = "${key}:${value}"
+                    if (index >= 0) lines[index] = setting else lines << setting
+                }
+                optionsFile.parentFile.mkdirs()
+                optionsFile.text = lines.join(System.lineSeparator()) + System.lineSeparator()
+            }
+        }
         doLast {
             def log = file("${smokeClientDirectory}/logs/latest.log").text
             if (!log.contains('BOXY_CLIENT_SMOKE_OK')) {

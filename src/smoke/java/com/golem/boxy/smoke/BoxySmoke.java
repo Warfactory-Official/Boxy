@@ -29,6 +29,11 @@ public final class BoxySmoke {
             config.lodDistanceChunks = Math.max(32, OcclusionSmoke.ENTITY_X / 16 + 4);
             config.entityTrackingDistanceChunks = Math.max(32, OcclusionSmoke.ENTITY_X / 16 + 4);
         }
+        if (Boolean.getBoolean("boxy.perf")) {
+            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.HIGHEST, PerfServerSampler::beforeTick);
+            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, PerfServerSampler::tick);
+            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.HIGHEST, PerfServerSampler::onServerStopping);
+        }
         NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, BoxySmoke::checkServer);
         NeoForge.EVENT_BUS.addListener(BoxySmoke::placeDistantPig);
     }
@@ -37,6 +42,18 @@ public final class BoxySmoke {
         if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) return;
         if (Boolean.getBoolean("boxy.smokeStability")) {
             player.setGameMode(net.minecraft.world.level.GameType.SPECTATOR);
+            if (Boolean.getBoolean("boxy.perf")) {
+                var level = player.serverLevel();
+                player.teleportTo(level, -74.5, 63.0, -57.5, -90.0F, 25.0F);
+                level.setDayTime(6000L);
+                level.setWeatherParameters(0, 6000, false, false);
+                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_DAYLIGHT)
+                        .set(false, level.getServer());
+                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_WEATHER_CYCLE)
+                        .set(false, level.getServer());
+                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_DOMOBSPAWNING)
+                        .set(false, level.getServer());
+            }
             return;
         }
         if (Boolean.getBoolean("boxy.smokeOcclusion")) {

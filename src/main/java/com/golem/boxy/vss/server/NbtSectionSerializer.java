@@ -36,6 +36,11 @@ import java.util.concurrent.TimeUnit;
  */
 final class NbtSectionSerializer {
     private static final byte[] EMPTY = new byte[0];
+    private static final ThreadLocal<CodecCache> CODEC_CACHE = ThreadLocal.withInitial(CodecCache::new);
+    private static final ThreadLocal<ArrayList<ParsedSection>> PARSED_SECTIONS =
+            ThreadLocal.withInitial(() -> new ArrayList<>(16));
+    private static final ThreadLocal<FriendlyByteBuf> OUTPUT_BUFFER = ThreadLocal.withInitial(
+            () -> new FriendlyByteBuf(Unpooled.buffer(4096)));
 
     private NbtSectionSerializer() {}
 
@@ -51,39 +56,39 @@ final class NbtSectionSerializer {
             return null;
         }
 
-        Registry<Biome> biomeRegistry = registryAccess.registryOrThrow(Registries.BIOME);
-        Holder<Biome> defaultBiome = biomeRegistry.getHolderOrThrow(Biomes.PLAINS);
-        Codec<PalettedContainer<BlockState>> blockStateCodec = PalettedContainer.codecRW(
-                Block.BLOCK_STATE_REGISTRY, BlockState.CODEC, PalettedContainer.Strategy.SECTION_STATES, Blocks.AIR.defaultBlockState());
-        Codec<PalettedContainer<Holder<Biome>>> biomeCodec = PalettedContainer.codecRW(
-                biomeRegistry.asHolderIdMap(), biomeRegistry.holderByNameCodec(), PalettedContainer.Strategy.SECTION_BIOMES, defaultBiome);
+        CodecCache codecs = CODEC_CACHE.get();
+        if (codecs.registryAccess != registryAccess) codecs.reset(registryAccess);
 
         ListTag sectionsList = chunkNbt.getList("sections", Tag.TAG_COMPOUND);
         if (sectionsList.isEmpty()) {
             return new byte[0];
         }
 
-        ArrayList<ParsedSection> parsed = new ArrayList<>(sectionsList.size());
-        for (int idx = 0; idx < sectionsList.size(); idx++) {
-            CompoundTag sectionTag = sectionsList.getCompound(idx);
-            int sectionY = sectionTag.contains("Y") ? sectionTag.getInt("Y") : Integer.MIN_VALUE;
-            if (sectionY == Integer.MIN_VALUE) {
-                continue;
-            }
-            byte[] blockLightData = sectionTag.contains("BlockLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("BlockLight") : EMPTY;
-            LevelChunkSection section = parseSection(sectionTag, blockStateCodec, biomeCodec, defaultBiome, biomeRegistry, blockLightData);
-            if (section != null) {
-                byte[] skyLightData = sectionTag.contains("SkyLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("SkyLight") : EMPTY;
-                parsed.add(new ParsedSection(sectionY, section, blockLightData, skyLightData));
-            }
-        }
-
-        if (parsed.isEmpty()) {
-            return new byte[0];
-        }
-
-        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer(parsed.size() * 1024));
+        ArrayList<ParsedSection> parsed = PARSED_SECTIONS.get();
+        parsed.clear();
         try {
+            for (int idx = 0; idx < sectionsList.size(); idx++) {
+                CompoundTag sectionTag = sectionsList.getCompound(idx);
+                int sectionY = sectionTag.contains("Y") ? sectionTag.getInt("Y") : Integer.MIN_VALUE;
+                if (sectionY == Integer.MIN_VALUE) {
+                    continue;
+                }
+                byte[] blockLightData = sectionTag.contains("BlockLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("BlockLight") : EMPTY;
+                LevelChunkSection section = parseSection(sectionTag, codecs.blockStateCodec, codecs.biomeCodec,
+                        codecs.defaultBiome, codecs.biomeRegistry, blockLightData);
+                if (section != null) {
+                    byte[] skyLightData = sectionTag.contains("SkyLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("SkyLight") : EMPTY;
+                    parsed.add(new ParsedSection(sectionY, section, blockLightData, skyLightData));
+                }
+            }
+
+            if (parsed.isEmpty()) {
+                return new byte[0];
+            }
+
+            FriendlyByteBuf buf = OUTPUT_BUFFER.get();
+            buf.clear();
+            buf.ensureWritable(parsed.size() * 1024);
             buf.writeVarInt(parsed.size());
             for (ParsedSection p : parsed) {
                 buf.writeByte(p.sectionY);
@@ -100,10 +105,10 @@ final class NbtSectionSerializer {
                 }
             }
             byte[] result = new byte[buf.readableBytes()];
-            buf.readBytes(result);
+            buf.getBytes(buf.readerIndex(), result);
             return result;
         } finally {
-            buf.release();
+            parsed.clear();
         }
     }
 
@@ -155,4 +160,31 @@ final class NbtSectionSerializer {
     }
 
     private record ParsedSection(int sectionY, LevelChunkSection section, byte[] blockLight, byte[] skyLight) {}
+
+    /** Codec construction walks registry-backed codec graphs and is expensive on every disk column. */
+    private static final class CodecCache {
+        private RegistryAccess registryAccess;
+        private Registry<Biome> biomeRegistry;
+        private Holder<Biome> defaultBiome;
+        private Codec<PalettedContainer<BlockState>> blockStateCodec;
+        private Codec<PalettedContainer<Holder<Biome>>> biomeCodec;
+
+        private void reset(RegistryAccess access) {
+            // Construct the complete replacement before publishing its key. A failed lookup or codec
+            // construction must remain retryable, rather than exposing a partially initialized cache.
+            Registry<Biome> registry = access.registryOrThrow(Registries.BIOME);
+            Holder<Biome> plains = registry.getHolderOrThrow(Biomes.PLAINS);
+            Codec<PalettedContainer<BlockState>> states = PalettedContainer.codecRW(
+                    Block.BLOCK_STATE_REGISTRY, BlockState.CODEC, PalettedContainer.Strategy.SECTION_STATES,
+                    Blocks.AIR.defaultBlockState());
+            Codec<PalettedContainer<Holder<Biome>>> biomes = PalettedContainer.codecRW(
+                    registry.asHolderIdMap(), registry.holderByNameCodec(),
+                    PalettedContainer.Strategy.SECTION_BIOMES, plains);
+            this.biomeRegistry = registry;
+            this.defaultBiome = plains;
+            this.blockStateCodec = states;
+            this.biomeCodec = biomes;
+            this.registryAccess = access;
+        }
+    }
 }

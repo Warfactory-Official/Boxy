@@ -15,6 +15,8 @@ public final class BoxyClientSmoke {
     private int ticks;
     private int dimensionPhase;
     private int dimensionTicks;
+    private int perfWarmupTicks;
+    private boolean correctnessComplete;
     private long columnsBeforeReturn;
     public static int distantPigDraws;
     public static int bandedPigDraws;
@@ -34,10 +36,19 @@ public final class BoxyClientSmoke {
 
     private void tick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
+        PerfSampler.tick(mc);
         mc.options.pauseOnLostFocus = false;
         mc.options.renderDistance().set(4);
         mc.options.simulationDistance().set(5);
         if (mc.level == null || mc.player == null) return;
+        boolean streamingReady = !com.golem.boxy.vss.config.VSSClientConfig.CONFIG.receiveServerLods
+                || ClientNetworking.isServerEnabled() && ClientNetworking.getRequestManager() != null
+                && ClientNetworking.getColumnsReceived() > 0;
+        if (PerfSampler.enabled() && mc.screen == null && mc.getOverlay() == null && !mc.isPaused()
+                && streamingReady && VoxyCommon.getInstance() != null && IGetVoxyRenderSystem.getNullable() != null
+                && ++perfWarmupTicks == 200) {
+            PerfSampler.startMeasurement();
+        }
         if (Boolean.getBoolean("boxy.smokeHbm")) {
             HbmTerrainSmoke.tick(mc);
             return;
@@ -60,16 +71,24 @@ public final class BoxyClientSmoke {
                 || ClientNetworking.getColumnsReceived() == 0) {
             throw new AssertionError("Integrated VSS handshake/stream did not complete");
         }
-        if (distantPigDraws == 0) throw new AssertionError("Distant pig never reached the entity renderer");
-        if (bandedPigDraws == 0) throw new AssertionError("Distant pig never rendered inside a depth band");
-        if (!DirtyDeliverySmoke.check(mc)) return;
-        if (!OuterDirtyDeliverySmoke.check(mc)) return;
-        if (!EntityPairingSmoke.check(mc)) return;
-        checkLightHandoff(mc);
-        try (var image = net.minecraft.client.Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
-            image.writeToFile(new java.io.File(mc.gameDirectory, "boxy-smoke.png"));
-        } catch (java.io.IOException e) {
-            throw new AssertionError("Unable to capture client smoke frame", e);
+        if (!correctnessComplete) {
+            if (distantPigDraws == 0) throw new AssertionError("Distant pig never reached the entity renderer");
+            if (bandedPigDraws == 0) throw new AssertionError("Distant pig never rendered inside a depth band");
+            if (!DirtyDeliverySmoke.check(mc)) return;
+            if (!OuterDirtyDeliverySmoke.check(mc)) return;
+            if (!EntityPairingSmoke.check(mc)) return;
+            checkLightHandoff(mc);
+            correctnessComplete = true;
+        }
+        if (PerfSampler.enabled() && PerfSampler.measuredTicks() < 400L) return;
+        // End sampling before screenshot readback, disk I/O, and final success logging.
+        PerfSampler.finish(mc);
+        if (!PerfSampler.enabled()) {
+            try (var image = net.minecraft.client.Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                image.writeToFile(new java.io.File(mc.gameDirectory, "boxy-smoke.png"));
+            } catch (java.io.IOException e) {
+                throw new AssertionError("Unable to capture client smoke frame", e);
+            }
         }
         com.mojang.logging.LogUtils.getLogger().info("BOXY_CLIENT_SMOKE_OK: native renderer, {} distant pig draws ({} banded), integrated VSS received {} columns",
                 distantPigDraws, bandedPigDraws, ClientNetworking.getColumnsReceived());

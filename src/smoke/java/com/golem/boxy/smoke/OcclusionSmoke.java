@@ -112,10 +112,13 @@ public final class OcclusionSmoke {
             joins = 0;
         }
         if (ticks >= 540) {
-            try (var image = net.minecraft.client.Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
-                image.writeToFile(new java.io.File(mc.gameDirectory, "boxy-occlusion.png"));
-            } catch (java.io.IOException e) {
-                throw new AssertionError(e);
+            PerfSampler.finish(mc);
+            if (!PerfSampler.enabled()) {
+                try (var image = net.minecraft.client.Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                    image.writeToFile(new java.io.File(mc.gameDirectory, "boxy-occlusion.png"));
+                } catch (java.io.IOException e) {
+                    throw new AssertionError(e);
+                }
             }
             com.mojang.logging.LogUtils.getLogger().info("BOXY_OCCLUSION_HIDDEN: {} samples across {} passes; wallReady={}", samples, measuredPasses, wallReady);
             if (!wallReady || measuredPasses == 0 || samples != 0 || joins == 0) throw new AssertionError("Ghast rendered through LOD-only wall: " + samples + " samples, " + joins + " depth joins");

@@ -116,6 +116,8 @@ public final class EntityLoadingSmoke {
             }
             FrozenChunkLoader.onPlayerLoggedOut(new PlayerEvent.PlayerLoggedOutEvent(player));
             LogUtils.getLogger().info("BOXY_ENTITY_LOADING_SMOKE_OK: discovery, dimension isolation, unload retention, distant reload, entity-centered radius, movement, non-ticking, overlapping players/logout, range exit/reentry, destruction");
+            PerfServerSampler.finish(server);
+            // Let normal shutdown flush saves and dump the JFR recording.
             server.halt(false);
             phase = 5;
         }
