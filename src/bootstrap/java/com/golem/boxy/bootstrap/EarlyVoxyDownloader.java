@@ -50,13 +50,18 @@ public final class EarlyVoxyDownloader implements ITransformationService {
         if (isServerOrDataLaunch(launchTarget)) {
             System.out.println("[Boxy] Skipping client-only Voxy download on a server launch");
             removeServerVoxy(modsDir);
+            SableVoxyOverride.ensureVoxySableCompat(gameDir, modsDir);
             return;
         }
 
         try {
             Files.createDirectories(modsDir);
-            if (containsVoxy(modsDir)) return;
+            if (containsVoxy(modsDir)) {
+                SableVoxyOverride.ensureVoxySableCompat(gameDir, modsDir);
+                return;
+            }
             download(modsDir.resolve(FILE_NAME));
+            SableVoxyOverride.ensureVoxySableCompat(gameDir, modsDir);
         } catch (Exception error) {
             throw new IllegalStateException("Boxy could not install Voxy. Check your internet connection or install Voxy manually in "
                     + modsDir, error);

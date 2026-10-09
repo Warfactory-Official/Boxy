@@ -37,6 +37,13 @@ versionRange="[0.8.12-beta.2,0.9)"
 ordering="AFTER"
 side="CLIENT"
 
+[[dependencies.boxy]]
+modId="sable"
+type="optional"
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"
+
 [[mixins]]
 config="boxy.mixins.json"
 

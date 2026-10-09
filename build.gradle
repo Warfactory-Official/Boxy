@@ -11,6 +11,10 @@ sourceSets {
     bootstrap {
         compileClasspath += sourceSets.main.compileClasspath
     }
+    test {
+        compileClasspath += sourceSets.bootstrap.output
+        runtimeClasspath += sourceSets.bootstrap.output
+    }
 }
 def defaultSmokeClientDirectory = providers.gradleProperty('hbm_smoke').isPresent() ? 'run/hbm-smoke' :
         (providers.gradleProperty('locator_smoke').isPresent() ? 'run/locator-smoke' :

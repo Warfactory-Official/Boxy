@@ -106,6 +106,13 @@ Use official Mojmap names for Minecraft targets. No hand-SRG names or runtime se
 
 Voxy-specific mixins remain in Boxy's own config. Do not modify Voxy's mixin JSON or jar. Upstream already supplies `/voxy`, native config, and its NeoForge Chunky integration.
 
+Voxy ships a hard `sable = incompatible` gate (`"Difficult to diagnose slowdowns"`, `[0,)`, both
+sides). Boxy lifts it without touching Voxy: the isolated bootstrap writes NeoForge's supported
+`dependencyOverrides.voxy = ["-sable"]` into `config/fml.toml` when both jars are present, plus a
+best-effort in-memory patch of the already-loaded `FMLConfig` so the current launch proceeds. Boxy
+declares Sable optional `AFTER` on both sides and resets the GL active texture unit after Voxy's LOD
+pass while Sable is loaded (`SableSupport`), avoiding black contraptions from Voxy's DSA-only binds.
+
 For development, full Sodium/Voxy/Iris jars and an internal bootstrap-only companion are installed into `run/client/mods`; the core source set remains the loaded development mod. Sodium's distribution has an early graphics bootstrap/service locator: adding that outer jar as a regular ModDev runtime classpath mod can drop its nested implementation. Boxy mirrors Sodium's `IModFileCandidateLocator`: ModLauncher claims the outer service path, then the locator mounts the nested core with the `jij:` filesystem and submits it through `IDiscoveryPipeline.addJarContent`. Standard Jar-in-Jar dependency discovery alone cannot see an outer path already claimed as a service.
 
 ## Verification

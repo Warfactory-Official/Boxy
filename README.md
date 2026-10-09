@@ -16,6 +16,7 @@ Client baseline:
 | Voxy | 0.2.15-beta, NeoForge build from the selected multiversion source |
 | Sodium | 0.8.12-beta.2 for NeoForge 1.21.1 |
 | Iris, optional | 1.8.14-beta.1 for NeoForge 1.21.1 |
+| Sable, optional | any 1.x/2.x for NeoForge 1.21.1 (Boxy lifts Voxy's load gate) |
 
 Install the complete native distribution jars in `mods/`, not the Sodium API/development jars. Install the matching `boxy-2.0.0-alpha.1.jar`; it is a single Jar-in-Jar distribution containing Boxy's NeoForge mod and its early Voxy bootstrap. The same jar is safe on a dedicated server because the bootstrap skips server launch targets. **Do not install the old Fabric Voxy jar, Embeddium, Oculus, the old Boxy loader, or an older combined Boxy jar.**
 
@@ -46,6 +47,19 @@ The download source is the official release URL:
 `https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.15-beta+1.21.1-neoforge.jar`
 
 If the download fails or the result is not a valid Voxy NeoForge jar, startup stops before Boxy can enter a broken state. Users may also install Voxy manually; an existing valid Voxy jar is reused.
+
+### Sable Compatibility
+
+Voxy's NeoForge metadata declares Sable `incompatible` (`"Difficult to diagnose slowdowns"`, all
+versions, both sides), so NeoForge aborts startup whenever both jars are present. Sable itself is an
+intrusive physics/sub-level mod, and the gate exists to avoid slowdown bug reports rather than to
+mark a crash. When Boxy detects both Voxy and Sable in `mods/`, its early bootstrap writes NeoForge's
+supported override `dependencyOverrides.voxy = ["-sable"]` into `config/fml.toml` and best-effort
+patches the already-loaded config for the current launch, so the pair loads together. Boxy declares
+Sable as an optional `AFTER` dependency and resets the GL active texture unit to 0 after Voxy's LOD
+pass while Sable is loaded, which avoids black Sable contraptions caused by Voxy's DSA-only binds
+leaving the active unit elsewhere. Sable ships still use Sable's own renderer and loading; Boxy does
+not embed, patch, or redistribute Voxy or Sable.
 
 ## Build
 

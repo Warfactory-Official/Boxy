@@ -1,6 +1,7 @@
 package com.golem.boxy.bootstrap;
 
 import cpw.mods.jarhandling.JarContents;
+import cpw.mods.modlauncher.api.IEnvironment;
 import net.neoforged.neoforgespi.ILaunchContext;
 import net.neoforged.neoforgespi.locating.IDiscoveryPipeline;
 import net.neoforged.neoforgespi.locating.IModFileCandidateLocator;
@@ -24,6 +25,13 @@ public final class BoxyServiceModLocator implements IModFileCandidateLocator {
 
     @Override
     public void findCandidates(ILaunchContext context, IDiscoveryPipeline pipeline) {
+        // Voxy's sable gate is evaluated after all bootstrap initialize() calls, so a best-effort
+        // in-memory override here still lands before ModSorter validation for the current launch.
+        // The file override (handled by the downloader service) covers subsequent launches.
+        try {
+            SableVoxyOverride.ensureInMemoryOnly(resolveModsDir(context));
+        } catch (Exception ignored) {
+        }
         Path directory = locateServiceRoot().resolve(JIJ_DIR);
         if (!Files.isDirectory(directory)) return;
 
@@ -48,6 +56,21 @@ public final class BoxyServiceModLocator implements IModFileCandidateLocator {
 
     private static boolean isJar(Path path) {
         return path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar");
+    }
+
+    private static Path resolveModsDir(ILaunchContext context) {
+        try {
+            Path gameDir = context.environment().getProperty(IEnvironment.Keys.GAMEDIR.get()).orElse(null);
+            if (gameDir != null) {
+                return gameDir.resolve("mods");
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            return Path.of(System.getProperty("user.dir", ".")).resolve("mods");
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static Path locateServiceRoot() {

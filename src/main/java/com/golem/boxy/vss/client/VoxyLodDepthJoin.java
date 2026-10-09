@@ -69,6 +69,10 @@ public final class VoxyLodDepthJoin {
         targetWidth = width;
         targetHeight = height;
         joined = false;
+        // Voxy binds with DSA only and leaves the active texture unit wherever Sodium/Iris left it.
+        // Sable's sub-level renderer binds through the current unit, so without this reset its block
+        // atlas can land on the wrong unit and contraptions render black. No-op without Sable.
+        SableSupport.resetActiveTextureUnitAfterVoxy();
     }
 
     /** Called before a tracked entity, while its original projection is still active. */
