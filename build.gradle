@@ -1,5 +1,6 @@
 plugins {
     id 'java-library'
+    id 'maven-publish'
     id 'net.neoforged.moddev' version '2.0.141'
 }
 
@@ -47,8 +48,31 @@ neoForge {
 neoForge.runs.client.loadedMods.set([neoForge.mods.boxy])
 neoForge.runs.server.loadedMods.set([neoForge.mods.boxy])
 
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            from components.java
+            groupId = mod_group_id
+            artifactId = mod_id
+            version = "${mod_version}-SNAPSHOT"
+        }
+    }
+    repositories {
+        maven {
+            name = 'WarfactorySnapshots'
+            url = 'https://repo.warfactory.co/snapshots'
+            def warfactoryUser = project.findProperty('warfactoryUser') ?: System.getenv('WARFACTORY_MAVEN_USER')
+            def warfactoryToken = project.findProperty('warfactoryToken') ?: System.getenv('WARFACTORY_MAVEN_TOKEN')
+            credentials {
+                username = warfactoryUser
+                password = warfactoryToken
+            }
+        }
+    }
+}
+
 def voxyJar = providers.gradleProperty('voxy_jar').map { file(it) }
-        .orElse(layout.projectDirectory.file('libs/voxy-0.2.15-beta+1.21.1-neoforge.jar').asFile)
+        .orElse(layout.projectDirectory.file('libs/voxy-0.2.17-beta+1.21.1-neoforge.jar').asFile)
 
 configurations {
     nativeClientMods { transitive = false }

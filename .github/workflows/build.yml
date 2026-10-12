@@ -51,3 +51,10 @@ jobs:
             --title "Latest Boxy build (${GITHUB_SHA::7})" \
             --notes "Automated Boxy NeoForge 1.21.1 build of ${GITHUB_SHA}. Install the single Boxy jar; Voxy is downloaded separately at client startup." \
             --latest=false
+
+      - name: Publish snapshot
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          WARFACTORY_MAVEN_USER: ${{ secrets.WARFACTORY_MAVEN_USER }}
+          WARFACTORY_MAVEN_TOKEN: ${{ secrets.WARFACTORY_MAVEN_TOKEN }}
+        run: ./gradlew publish --no-daemon --stacktrace
