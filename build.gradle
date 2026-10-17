@@ -189,7 +189,7 @@ tasks.named('test') { useJUnitPlatform() }
 tasks.register('stageVoxyDependency', Copy) {
     from voxyJar
     into 'libs'
-    rename { 'voxy-0.2.15-beta+1.21.1-neoforge.jar' }
+    rename { 'voxy-0.2.17-beta+1.21.1-neoforge.jar' }
 }
 
 tasks.register('verifyProductionJar') {

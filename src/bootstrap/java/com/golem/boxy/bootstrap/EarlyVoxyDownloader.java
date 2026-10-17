@@ -28,8 +28,8 @@ import java.util.jar.JarFile;
 
 /** Runs before NeoForge's ordinary mod validation so Voxy can be present for the same launch. */
 public final class EarlyVoxyDownloader implements ITransformationService {
-    private static final String URL = "https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.15-beta+1.21.1-neoforge.jar";
-    private static final String FILE_NAME = "1.21.1-neoforge-voxy-0.2.15-beta+1.21.1-neoforge.jar";
+    private static final String URL = "https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.17-beta+1.21.1-neoforge.jar";
+    private static final String FILE_NAME = "1.21.1-neoforge-voxy-0.2.17-beta+1.21.1-neoforge.jar";
     private static final String MOD_ID = "voxy";
 
     @Override

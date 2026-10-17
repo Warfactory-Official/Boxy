@@ -13,7 +13,7 @@ Client baseline:
 | Minecraft | 1.21.1 |
 | Java | 21 |
 | NeoForge | 21.1.248 or newer |
-| Voxy | 0.2.15-beta, NeoForge build from the selected multiversion source |
+| Voxy | 0.2.17-beta, NeoForge build from the selected multiversion source |
 | Sodium | 0.8.12-beta.2 for NeoForge 1.21.1 |
 | Iris, optional | 1.8.14-beta.1 for NeoForge 1.21.1 |
 | Sable, optional | any 1.x/2.x for NeoForge 1.21.1 (Boxy lifts Voxy's load gate) |
@@ -46,7 +46,7 @@ On a client launch, the outer `boxy` jar runs a ModLauncher early service before
 
 The download source is the official release URL:
 
-`https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.15-beta+1.21.1-neoforge.jar`
+`https://github.com/Warfactory-Official/voxy/releases/download/latest/1.21.1-neoforge-voxy-0.2.17-beta+1.21.1-neoforge.jar`
 
 If the download fails or the result is not a valid Voxy NeoForge jar, startup stops before Boxy can enter a broken state. Users may also install Voxy manually; an existing valid Voxy jar is reused.
 
@@ -68,7 +68,7 @@ not embed, patch, or redistribute Voxy or Sable.
 Use JDK 21. Supply the native Voxy jar in `libs/voxy-0.2.17-beta+1.21.1-neoforge.jar`, or point `-Pvoxy_jar` to it:
 
 ```powershell
-.\gradlew.bat build "-Pvoxy_jar=C:\path\to\voxy-0.2.15-beta+1.21.1-neoforge.jar"
+.\gradlew.bat build "-Pvoxy_jar=C:\path\to\voxy-0.2.17-beta+1.21.1-neoforge.jar"
 ```
 
 Output: `build/libs/boxy-2.0.0-alpha.1.jar`. It is the single production distribution containing the isolated bootstrap and nested core mod; no `shadowJar`, reobfuscation, extracted game-layer jar, or bundled Mixin upgrade is used.
@@ -78,7 +78,7 @@ To build the supplied Voxy source without changing the original directory:
 ```powershell
 .\gradlew.bat stageVoxySource "-Pvoxy_source=C:\path\to\voxy-multiversion"
 .\build\voxy-source\gradlew.bat -p build/voxy-source :1.21.1-neoforge:jar --configure-on-demand
-.\gradlew.bat stageVoxyDependency "-Pvoxy_jar=build/voxy-source/versions/1.21.1-neoforge/build/libs/voxy-0.2.15-beta+1.21.1-neoforge.jar"
+.\gradlew.bat stageVoxyDependency "-Pvoxy_jar=build/voxy-source/versions/1.21.1-neoforge/build/libs/voxy-0.2.17-beta+1.21.1-neoforge.jar"
 .\gradlew.bat build
 ```
 
