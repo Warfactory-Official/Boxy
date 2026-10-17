@@ -28,8 +28,10 @@ The Voxy reference's original NeoForge 21.1.230/Iris 1.8.12 pins were not compat
 
 - Server terrain streaming from loaded chunks, region-file reads, and optional on-demand generation.
 - Live dirty-column synchronization, bounded work queues, bandwidth/concurrency limits, and persistent validation timestamps.
-- Distant real players and configured entity types, server-synced whitelists, namespace wildcards, interpolation, and client opt-out.
-- Optional non-ticking chunk loading for distant entities, default off.
+- Fog of war (`liveDistanceChunks`): far changes stay unseen until near; beyond it every client gets the same periodic snapshot (`baselineRefreshMinutes`), never live terrain. Surface-only LOD content (`surfaceOnlyLods`): no ores, caves or buried bases in LODs.
+- Velocity-led request order: terrain ahead of fast vehicles streams first.
+- Distant real players and configured entity types (default 94 chunks), server-synced whitelists, namespace wildcards, entity-type tag `boxy:distant` (mods opt in with data), interpolation, and client opt-out.
+- Non-ticking chunk loading for distant discovered entities, default on, own chunk only.
 - Distant-entity depth modes: Off, Basic, and Precise. Precise falls back to Basic under active shaderpacks.
 - Native Sodium settings page for Boxy's client options.
 - Integrated-server spawn ingestion and retained, configurable Voxy lighting/occlusion fixes that are absent upstream.
@@ -63,7 +65,7 @@ not embed, patch, or redistribute Voxy or Sable.
 
 ## Build
 
-Use JDK 21. Supply the native Voxy jar in `libs/voxy-0.2.15-beta+1.21.1-neoforge.jar`, or point `-Pvoxy_jar` to it:
+Use JDK 21. Supply the native Voxy jar in `libs/voxy-0.2.17-beta+1.21.1-neoforge.jar`, or point `-Pvoxy_jar` to it:
 
 ```powershell
 .\gradlew.bat build "-Pvoxy_jar=C:\path\to\voxy-0.2.15-beta+1.21.1-neoforge.jar"

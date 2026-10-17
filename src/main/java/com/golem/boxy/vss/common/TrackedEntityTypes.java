@@ -3,7 +3,9 @@ package com.golem.boxy.vss.common;
 import com.golem.boxy.vss.config.VSSClientConfig;
 import com.golem.boxy.vss.config.VSSServerConfig;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.EntityType;
 
 import java.util.HashSet;
@@ -22,8 +24,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>An id of the form {@code "modid:*"} is a wildcard that whitelists every registered entity type in
  * that namespace (e.g. {@code "minecraft:*"} or {@code "create:*"}).
+ *
+ * <p>Types in the entity-type tag {@link #TAG} ({@code boxy:distant}) are always included: mods opt in with data.
  */
 public final class TrackedEntityTypes {
+    public static final TagKey<EntityType<?>> TAG =
+            TagKey.create(Registries.ENTITY_TYPE, ResourceLocation.fromNamespaceAndPath("boxy", "distant"));
+
     private static volatile Set<EntityType<?>> serverSet;
     private static List<String> serverIds;
     private static volatile Set<EntityType<?>> clientSet;
@@ -112,6 +119,9 @@ public final class TrackedEntityTypes {
 
     /** True if the server should extend tracking for this entity type. */
     public static boolean serverContains(EntityType<?> type) {
+        if (type.is(TAG)) {
+            return true;
+        }
         Set<EntityType<?>> set = serverSet;
         if (set == null) {
             refreshServerTypes();
@@ -131,6 +141,9 @@ public final class TrackedEntityTypes {
 
     /** True if the client should render this entity type beyond the vanilla cull distance. */
     public static boolean clientContains(EntityType<?> type) {
+        if (type.is(TAG)) {
+            return true;
+        }
         Set<EntityType<?>> synced = syncedSet;
         if (synced != null) {
             return synced.contains(type); // server-synced list wins while connected

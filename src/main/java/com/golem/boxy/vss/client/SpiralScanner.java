@@ -44,6 +44,8 @@ class SpiralScanner {
    SpiralScanner.ScanResult scan(
       int playerCx,
       int playerCz,
+      int leadCx,
+      int leadCz,
       int viewDistance,
       Long2LongOpenHashMap columnTimestamps,
       LongOpenHashSet dirtyColumns,
@@ -84,9 +86,12 @@ class SpiralScanner {
          }
       }
 
+      // Rings around the lead (velocity-led) center; range and vanilla exclusion stay player-relative.
+      // Lead != player: ring 0 (the lead cell itself) is skipped; next lead step covers it.
+      int lead = PositionUtil.chebyshevDistance(leadCx, leadCz, playerCx, playerCz);
       label92:
-      for (int r = localConfirmedRing; r <= lodDistance; r++) {
-         if (2 * r * r <= exclusionDistSq) {
+      for (int r = localConfirmedRing; r <= lodDistance + lead; r++) {
+         if (lead == 0 && 2 * r * r <= exclusionDistSq) {
             localConfirmedRing = r + 1;
          } else if (r == 0) {
             localConfirmedRing = 1;
@@ -100,9 +105,10 @@ class SpiralScanner {
                   break label92;
                }
 
-               ringIndexToCoord(r, i, playerCx, playerCz, chunkCoords);
+               ringIndexToCoord(r, i, leadCx, leadCz, chunkCoords);
                int cx = chunkCoords[0];
                int cz = chunkCoords[1];
+               if (PositionUtil.chebyshevDistance(cx, cz, playerCx, playerCz) > lodDistance) continue;
                int pdx = cx - playerCx;
                int pdz = cz - playerCz;
                if (pdx * pdx + pdz * pdz > exclusionDistSq) {
@@ -198,9 +204,9 @@ class SpiralScanner {
       this.voxyDistanceStaleness = 0;
    }
 
-   void resetScanCounter() {
+   /** Cadence untouched: a counter reset per chunk cross => no scan above 0.8 b/t (16 blocks / 20 ticks). */
+   void restartSpiral() {
       this.confirmedRing = 0;
-      this.scanTickCounter = 0;
    }
 
    /**
@@ -213,7 +219,6 @@ class SpiralScanner {
     */
    void recenter(int movedChebyshev) {
       this.confirmedRing = Math.max(0, this.confirmedRing - movedChebyshev);
-      this.scanTickCounter = 0;
    }
 
    /**
@@ -223,7 +228,6 @@ class SpiralScanner {
     */
    void lowerConfirmedRing(int ring) {
       this.confirmedRing = Math.min(this.confirmedRing, ring);
-      this.scanTickCounter = 0;
    }
 
    int getEffectiveLodDistance(SessionConfigS2CPayload sessionConfig) {

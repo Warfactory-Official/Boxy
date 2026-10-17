@@ -22,6 +22,19 @@ final class LodRequestPlanner {
     *  chunks never drops an in-range entry — it just stops re-walking every collection (the timestamp map
     *  alone can hold hundreds of thousands of entries) on every single chunk-boundary cross. */
    private static final int PRUNE_HYSTERESIS_CHUNKS = 8;
+   private static final int LIVE_MARGIN_CHUNKS = 2;
+   /** Scan centered where the player is this far ahead (ETA order); 300 km/h => 41 chunks. */
+   private static final double LEAD_SECONDS = 8.0;
+   /** Per-tick displacement above this = teleport, not motion. */
+   private static final double TELEPORT_BLOCKS = 64.0;
+   private double lastX;
+   private double lastZ;
+   private long lastGameTime = Long.MIN_VALUE;
+   /** Blocks/tick, EMA. */
+   private double velX;
+   private double velZ;
+   private int lastLeadDx;
+   private int lastLeadDz;
    private SessionConfigS2CPayload sessionConfig;
    private String serverAddress;
    private int lastChunkX;
@@ -38,6 +51,8 @@ final class LodRequestPlanner {
    private final LongOpenHashSet refreshColumns = new LongOpenHashSet();
    private final LongOpenHashSet rateLimitRetryPositions;
    private final LongOpenHashSet validatedThisSession;
+   /** Validated beyond the server's live distance (later changes fogged) => revalidate on entry. */
+   private final LongOpenHashSet farValidated = new LongOpenHashSet();
    private final RequestMetrics metrics;
    private int maxGenConcurrency;
    private int maxSyncConcurrency;
@@ -92,7 +107,8 @@ final class LodRequestPlanner {
       this.skipNextScan = false;
    }
 
-   record TickInput(ResourceKey<Level> dimension, int playerCx, int playerCz, int viewDistance,
+   record TickInput(ResourceKey<Level> dimension, int playerCx, int playerCz, double playerX, double playerZ, long gameTime,
+                    int viewDistance,
                     int missingVanilla, int queuedColumns, int clientDistance, int voxyDistance,
                     boolean incremental, long worldVersion) {}
    record Outbound(com.golem.boxy.vss.payloads.VssPayload payload, boolean[] cached) {}
@@ -134,7 +150,10 @@ final class LodRequestPlanner {
                   if (incremental) {
                      this.scanner.recenter(moved);
                   } else {
-                     this.scanner.resetScanCounter();
+                     this.scanner.restartSpiral();
+                  }
+                  if (this.releaseEnteredLive(playerCx, playerCz) && incremental) {
+                     this.scanner.lowerConfirmedRing(0);
                   }
                   if (Math.max(Math.abs(playerCx - this.lastPruneChunkX), Math.abs(playerCz - this.lastPruneChunkZ))
                         >= PRUNE_HYSTERESIS_CHUNKS) {
@@ -144,12 +163,14 @@ final class LodRequestPlanner {
                       this.scanner.pruneOutOfRangePositions(this.refreshColumns, playerCx, playerCz, pruneDistance);
                      this.scanner.pruneOutOfRangePositions(this.rateLimitRetryPositions, playerCx, playerCz, pruneDistance);
                      this.scanner.pruneOutOfRangePositions(this.validatedThisSession, playerCx, playerCz, pruneDistance);
+                     this.scanner.pruneOutOfRangePositions(this.farValidated, playerCx, playerCz, pruneDistance);
                      this.pruneAndCancelOutOfRangePending(playerCx, playerCz, pruneDistance);
                      this.lastPruneChunkX = playerCx;
                      this.lastPruneChunkZ = playerCz;
                   }
                }
 
+               this.trackVelocity(input);
                this.metrics.updateRollingRates();
                int columnQueueSize = input.queuedColumns();
                int columnQueueCapacity = 8000;
@@ -202,10 +223,29 @@ final class LodRequestPlanner {
                          budget = Math.max(budget, dirtyBudget);
 
                         if (budget > 0) {
+                           int lodDistance = this.scanner.getEffectiveLodDistance(this.sessionConfig);
+                           double lead = LEAD_SECONDS * 20.0 / 16.0;
+                           double leadX = this.velX * lead;
+                           double leadZ = this.velZ * lead;
+                           double leadMax = Math.max(Math.abs(leadX), Math.abs(leadZ));
+                           if (leadMax > lodDistance / 2.0) {
+                              leadX *= lodDistance / 2.0 / leadMax;
+                              leadZ *= lodDistance / 2.0 / leadMax;
+                           }
+                           int leadCx = playerCx + (int) Math.round(leadX);
+                           int leadCz = playerCz + (int) Math.round(leadZ);
+                           // Confirmed rings are relative to the scan center.
+                           if (leadCx - playerCx != this.lastLeadDx || leadCz - playerCz != this.lastLeadDz) {
+                              this.scanner.lowerConfirmedRing(0);
+                              this.lastLeadDx = leadCx - playerCx;
+                              this.lastLeadDz = leadCz - playerCz;
+                           }
                            SpiralScanner.ScanResult scanResult = this.scanner
                               .scan(
                                  playerCx,
                                  playerCz,
+                                 leadCx,
+                                 leadCz,
                                  viewDistance,
                                  this.columnTimestamps,
                                  this.dirtyColumns,
@@ -313,7 +353,7 @@ final class LodRequestPlanner {
           // A newer dirty notification may have arrived while this response was in flight.
           if (!this.dirtyColumns.contains(completion.position())) this.refreshColumns.remove(completion.position());
          this.putTimestamp(completion.position(), columnTimestamp);
-         this.validatedThisSession.add(completion.position());
+         this.markValidated(completion.position());
       }
 
       this.metrics.recordColumnReceived();
@@ -353,7 +393,7 @@ final class LodRequestPlanner {
          if (incrementalScan) {
             this.scanner.lowerConfirmedRing(minRing);
          } else {
-            this.scanner.resetScanCounter();
+            this.scanner.restartSpiral();
          }
       }
    }
@@ -371,7 +411,7 @@ final class LodRequestPlanner {
    public void onColumnUpToDate(int requestId) {
       InFlightTracker.RemovedRequest completion = this.tracker.removeByRequestId(requestId);
       if (completion != null) {
-         this.validatedThisSession.add(completion.position());
+         this.markValidated(completion.position());
          if (this.columnTimestamps.get(completion.position()) == -1L) {
             this.putTimestamp(completion.position(), VSSConstants.epochSeconds());
          }
@@ -396,7 +436,7 @@ final class LodRequestPlanner {
       this.cancelAllPending();
       this.resetRequestState();
       this.queue.clear();
-      this.scanner.resetScanCounter();
+      this.scanner.restartSpiral();
       this.cacheLoaded = true;
       this.startAsyncCacheLoad(newDimension);
    }
@@ -407,8 +447,55 @@ final class LodRequestPlanner {
        this.refreshColumns.clear();
       this.rateLimitRetryPositions.clear();
       this.validatedThisSession.clear();
+      this.farValidated.clear();
       this.tracker.clear();
       this.skipNextScan = false;
+   }
+
+   private void trackVelocity(TickInput input) {
+      long dt = input.gameTime() - this.lastGameTime;
+      double dx = input.playerX() - this.lastX;
+      double dz = input.playerZ() - this.lastZ;
+      this.lastX = input.playerX();
+      this.lastZ = input.playerZ();
+      this.lastGameTime = input.gameTime();
+      if (dt <= 0 || dt > 20 || Math.max(Math.abs(dx), Math.abs(dz)) > TELEPORT_BLOCKS * dt) {
+         this.velX = 0.0;
+         this.velZ = 0.0;
+         return;
+      }
+      this.velX += (dx / dt - this.velX) * 0.2;
+      this.velZ += (dz / dt - this.velZ) * 0.2;
+   }
+
+   /** Validated beyond the live distance => later changes fogged => revalidate on entry. */
+   private void markValidated(long position) {
+      this.validatedThisSession.add(position);
+      if (this.sessionConfig != null && PositionUtil.isOutOfRange(position, this.lastChunkX, this.lastChunkZ, this.liveRelease())) {
+         this.farValidated.add(position);
+      }
+   }
+
+   /** Server judges live distance by its own, lagging player position: margin LIVE_MARGIN_CHUNKS. */
+   private int liveRelease() {
+      return Math.max(0, this.sessionConfig.liveDistanceChunks() - LIVE_MARGIN_CHUNKS);
+   }
+
+   /** @return whether any column re-entered the live distance. */
+   private boolean releaseEnteredLive(int playerCx, int playerCz) {
+      if (this.farValidated.isEmpty()) return false;
+      int live = this.liveRelease();
+      boolean released = false;
+      for (int x = playerCx - live; x <= playerCx + live; x++) {
+         for (int z = playerCz - live; z <= playerCz + live; z++) {
+            long packed = PositionUtil.packPosition(x, z);
+            if (this.farValidated.remove(packed)) {
+               this.validatedThisSession.remove(packed);
+               released = true;
+            }
+         }
+      }
+      return released;
    }
 
    private void startAsyncCacheLoad(ResourceKey<Level> dimension) {

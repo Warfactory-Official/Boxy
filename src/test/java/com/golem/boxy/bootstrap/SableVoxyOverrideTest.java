@@ -75,4 +75,23 @@ class SableVoxyOverrideTest {
         assertTrue(updated.contains("dependencyOverrides.voxy = [\"-sable\"]"));
         assertNull(SableVoxyOverride.ensureOverrideInText(updated));
     }
+
+    @Test
+    void dependencyEntriesDoNotDeclareAMod() {
+        String voxy = "[[mods]]\nmodId=\"voxy\"\n\n[[dependencies.voxy]]\nmodId=\"sable\"\ntype=\"incompatible\"\n";
+        assertTrue(SableVoxyOverride.declaresMod(voxy, "voxy"));
+        assertFalse(SableVoxyOverride.declaresMod(voxy, "sable"));
+        assertTrue(SableVoxyOverride.declaresMod("[[mods]]\n  modId = 'sable' # x\n", "sable"));
+    }
+
+    @Test
+    void removalDropsOnlySableInEveryForm() {
+        assertEquals("dependencyOverrides.voxy = [\"+other\"]\n",
+                SableVoxyOverride.removeOverrideInText("dependencyOverrides.voxy = [\"+other\", \"-sable\"]\n"));
+        assertEquals("[dependencyOverrides]\n\tvoxy = []\n",
+                SableVoxyOverride.removeOverrideInText("[dependencyOverrides]\n\tvoxy = [\"-sable\"]\n"));
+        assertEquals("dependencyOverrides = { voxy = [] }\n",
+                SableVoxyOverride.removeOverrideInText("dependencyOverrides = { voxy = [\"-sable\"] }\n"));
+        assertNull(SableVoxyOverride.removeOverrideInText("dependencyOverrides.voxy = [\"+other\"]\n"));
+    }
 }

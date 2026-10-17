@@ -110,7 +110,8 @@ public final class LodRequestManager {
                 }
             }
         }
-        var input = new LodRequestPlanner.TickInput(level.dimension(), cx, cz, radius, missingVanilla,
+        var input = new LodRequestPlanner.TickInput(level.dimension(), cx, cz, mc.player.getX(), mc.player.getZ(),
+                level.getGameTime(), radius, missingVanilla,
                 ClientNetworking.getQueuedColumnCount(), VSSClientConfig.CONFIG.lodDistanceChunks,
                 VoxyClientBridge.getViewDistanceChunks().orElse(-1),
                 VSSClientConfig.CONFIG.incrementalSpiralRescan, worldVersion);

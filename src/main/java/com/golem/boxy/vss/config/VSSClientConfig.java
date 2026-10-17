@@ -17,7 +17,7 @@ public class VSSClientConfig extends JsonConfig {
    public boolean incrementalSpiralRescan = false;
    public boolean extendEntityRenderDistance = true;
    public List<String> renderedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
-   public int entityRenderDistanceChunks = 32;
+   public int entityRenderDistanceChunks = 94;
    // Fix distant-entity z-fighting by re-banding the depth buffer around each tracked entity at render time
    // (projection z-row swap + glDepthRange around a per-entity flush; see DistantEntityDepthFix and
    // DistantEntityDepthMode: OFF / BASIC = depth stays exact / PRECISE = ~10x more depth steps for a

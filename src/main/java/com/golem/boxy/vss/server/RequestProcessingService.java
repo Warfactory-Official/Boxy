@@ -24,9 +24,11 @@ import com.golem.boxy.vss.payloads.BatchResponseS2CPayload;
 import com.golem.boxy.vss.payloads.CancelRequestC2SPayload;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.storage.LevelResource;
 
@@ -68,6 +70,7 @@ public class RequestProcessingService {
     private final DirtyChunkReloads dirtyReloads;
     private final long startTimeNanos = System.nanoTime();
     private final DirtyColumnBroadcaster dirtyBroadcaster;
+    private final BaselineSnapshots baselines;
     private final Map<ServerLevel, String> dimensionStringCache = new HashMap<>();
     private int diagLogCounter = 0;
     private final TickDiagnostics diag = new TickDiagnostics();
@@ -98,6 +101,7 @@ public class RequestProcessingService {
         this.offThreadProcessor = new ServerOffThreadProcessor(this.players, this.diskReader, this.generationService, dataDir, config.perDimensionTimestampCacheSizeMB, this.bytesCache);
         this.offThreadProcessor.start();
         this.dirtyBroadcaster = new DirtyColumnBroadcaster(server, this.players, this.offThreadProcessor, this.dirtyTracker, this.bytesCache);
+        this.baselines = new BaselineSnapshots(server, this.offThreadProcessor.sequence());
     }
 
     public PlayerRequestState registerPlayer(ServerPlayer player, int capabilities) {
@@ -135,15 +139,39 @@ public class RequestProcessingService {
             int playerCx = player.getBlockX() >> 4;
             int playerCz = player.getBlockZ() >> 4;
             int maxDist = VSSServerConfig.CONFIG.lodDistanceChunks + VSSConstants.LOD_DISTANCE_BUFFER;
+            int liveDist = VSSServerConfig.CONFIG.liveDistanceChunks;
+            boolean baseline = VSSServerConfig.CONFIG.baselineRefreshMinutes > 0 && this.baselines.epochSeconds() > 0L;
+            int[] fogged = null;
+            int foggedCount = 0;
             for (int i = 0; i < payload.count(); i++) {
                 long packedPosition = payload.packedPositions()[i];
                 int cx = PositionUtil.unpackX(packedPosition);
                 int cz = PositionUtil.unpackZ(packedPosition);
-                if (PositionUtil.chebyshevDistance(cx, cz, playerCx, playerCz) <= maxDist) {
-                    state.addRequest(payload.requestIds()[i], packedPosition, payload.clientTimestamps()[i]);
+                int dist = PositionUtil.chebyshevDistance(cx, cz, playerCx, playerCz);
+                int id = payload.requestIds()[i];
+                long ts = payload.clientTimestamps()[i];
+                if (dist > liveDist && dist <= maxDist && baseline) {
+                    this.baselines.submit(state, player.serverLevel(), id, cx, cz, ts, () -> state.addRequest(id, packedPosition, ts));
+                } else if (dist > liveDist && ts > 0L) {
+                    // Fog of war without a baseline: the client stays on its version until within liveDistanceChunks.
+                    if (fogged == null) fogged = new int[payload.count()];
+                    fogged[foggedCount++] = id;
+                } else if (dist <= maxDist) {
+                    state.addRequest(id, packedPosition, ts);
                 }
             }
+            for (int off = 0; off < foggedCount; off += VSSConstants.MAX_BATCH_RESPONSES) {
+                int n = Math.min(VSSConstants.MAX_BATCH_RESPONSES, foggedCount - off);
+                byte[] types = new byte[n];
+                Arrays.fill(types, VSSConstants.RESPONSE_UP_TO_DATE);
+                VssChannels.sendToClient(player, new BatchResponseS2CPayload(types, Arrays.copyOfRange(fogged, off, off + n), n));
+            }
         }
+    }
+
+    /** Any thread: chunk NBT on its way to the region file. */
+    public void onChunkWritten(ServerLevel level, ChunkPos pos, CompoundTag tag) {
+        this.baselines.capture(level, pos, tag);
     }
 
     public void handleCancel(ServerPlayer player, CancelRequestC2SPayload payload) {
@@ -177,6 +205,7 @@ public class RequestProcessingService {
         // Serialize what last cycle's router actually asked for, before probing for new work. Ordering
         // matters under a tight budget: these requests already hold permits, so finishing them keeps the
         // pipeline draining, whereas new probes only create more work.
+        this.baselines.tick();
         this.drainLiveSerializeRequests(deadlineNanos);
         this.dirtyReloads.tick(deadlineNanos);
         List<GenerationReadyData> generationReady = this.tickGenerationService(deadlineNanos);
@@ -539,6 +568,7 @@ public class RequestProcessingService {
     }
 
     public void shutdown() {
+        this.baselines.shutdown();
         this.dirtyReloads.close();
         try {
             this.offThreadProcessor.shutdown();

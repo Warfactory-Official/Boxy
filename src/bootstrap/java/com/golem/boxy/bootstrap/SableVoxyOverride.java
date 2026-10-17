@@ -46,6 +46,8 @@ public final class SableVoxyOverride {
             Pattern.compile("(?m)^(?<prefix>\\s*\"?voxy\"?\\s*=\\s*)(?<value>\\[[^\\]]*\\]|\"[^\"]*\"|'[^']*')(?<suffix>\\s*(?:#.*)?)$");
     private static final Pattern INLINE_TABLE =
             Pattern.compile("(?m)^(?<prefix>\\s*dependencyOverrides\\s*=\\s*)\\{(?<body>[^}]*)\\}(?<suffix>\\s*(?:#.*)?)$");
+    private static final Pattern INLINE_VOXY =
+            Pattern.compile("(?<key>\"?voxy\"?)\\s*=\\s*(?<value>\\[[^\\]]*\\]|\"[^\"]*\"|'[^']*')");
     private static final Pattern MOD_ID = Pattern.compile("modId\\s*=\\s*[\"'](?<id>[^\"']+)[\"']");
 
     private SableVoxyOverride() {
@@ -53,15 +55,23 @@ public final class SableVoxyOverride {
 
     /** File + in-memory override when both Voxy and Sable jars are present in {@code modsDir}. */
     public static void ensureVoxySableCompat(Path gameDir, Path modsDir) {
+        boolean sable;
         try {
-            if (!isModPresent(modsDir, TARGET_MOD) || !isModPresent(modsDir, REMOVED_DEP)) {
+            if (!isModPresent(modsDir, TARGET_MOD)) {
                 return;
             }
+            sable = isModPresent(modsDir, REMOVED_DEP);
         } catch (Exception ignored) {
             return;
         }
-        ensureFileOverride(gameDir);
-        tryPatchInMemory();
+        if (sable) {
+            ensureFileOverride(gameDir);
+            tryPatchInMemory();
+        } else {
+            // Ours once Sable is gone: NeoForge warns on an override naming an absent mod, every launch.
+            removeFileOverride(gameDir);
+            tryUnpatchInMemory();
+        }
     }
 
     /** In-memory only variant for discovery-time call sites without a game directory. */
@@ -80,7 +90,13 @@ public final class SableVoxyOverride {
         tryPatchInMemory();
     }
 
+    /** {@code modsDir} jars, then dev classpath jars (ModDev puts dependency mods there, not in mods/). */
     static boolean isModPresent(Path modsDir, String modId) {
+        for (String entry : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
+            if (entry.endsWith(".jar") && isModJar(Path.of(entry), modId)) {
+                return true;
+            }
+        }
         if (modsDir == null || !Files.isDirectory(modsDir)) {
             return false;
         }
@@ -103,18 +119,28 @@ public final class SableVoxyOverride {
                 return false;
             }
             try (InputStream input = zip.getInputStream(entry)) {
-                String metadata = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-                Matcher matcher = MOD_ID.matcher(metadata);
-                while (matcher.find()) {
-                    if (modId.equals(matcher.group("id"))) {
-                        return true;
-                    }
-                }
-                return false;
+                return declaresMod(new String(input.readAllBytes(), StandardCharsets.UTF_8), modId);
             }
         } catch (IOException ignored) {
             return false;
         }
+    }
+
+    /** {@code modId} inside a {@code [[mods]]} table; dependency tables name other mods (Voxy's names sable). */
+    static boolean declaresMod(String metadata, String modId) {
+        boolean inMods = false;
+        for (String line : metadata.split("\\R")) {
+            String trimmed = line.strip();
+            if (trimmed.startsWith("[")) {
+                inMods = trimmed.equals("[[mods]]");
+            } else if (inMods) {
+                Matcher matcher = MOD_ID.matcher(trimmed);
+                if (matcher.lookingAt() && modId.equals(matcher.group("id"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     static void ensureFileOverride(Path gameDir) {
@@ -134,6 +160,73 @@ public final class SableVoxyOverride {
         } catch (Exception error) {
             System.err.println("[Boxy] Warning: could not write Voxy/Sable dependency override: " + error.getMessage());
         }
+    }
+
+    static void removeFileOverride(Path gameDir) {
+        if (gameDir == null) {
+            return;
+        }
+        Path configFile = gameDir.resolve("config").resolve("fml.toml");
+        try {
+            if (!Files.exists(configFile)) {
+                return;
+            }
+            String current = Files.readString(configFile, StandardCharsets.UTF_8);
+            String updated = removeOverrideInText(current);
+            if (updated != null) {
+                Files.writeString(configFile, updated, StandardCharsets.UTF_8);
+                System.out.println("[Boxy] Removed Voxy/Sable dependency override from config/fml.toml (Sable absent)");
+            }
+        } catch (Exception error) {
+            System.err.println("[Boxy] Warning: could not remove Voxy/Sable dependency override: " + error.getMessage());
+        }
+    }
+
+    /** Content with every {@code "-sable"} dropped from voxy's overrides, or null when none. */
+    static String removeOverrideInText(String content) {
+        if (content == null || !hasSableOverride(content)) {
+            return null;
+        }
+        String out = replaceValues(DOTTED_VOXY.matcher(content));
+        Matcher table = TABLE_HEADER.matcher(out);
+        if (table.find()) {
+            int start = table.end();
+            int end = findSectionEnd(out, start);
+            out = out.substring(0, start) + replaceValues(TABLE_VOXY.matcher(out.substring(start, end))) + out.substring(end);
+        }
+        Matcher inline = INLINE_TABLE.matcher(out);
+        if (inline.find()) {
+            Matcher entry = INLINE_VOXY.matcher(inline.group("body"));
+            StringBuilder body = new StringBuilder();
+            while (entry.find()) {
+                entry.appendReplacement(body, Matcher.quoteReplacement(entry.group("key") + " = " + withoutSable(entry.group("value"))));
+            }
+            entry.appendTail(body);
+            out = out.substring(0, inline.start()) + inline.group("prefix") + "{" + body + "}" + inline.group("suffix") + out.substring(inline.end());
+        }
+        return out;
+    }
+
+    private static String replaceValues(Matcher matcher) {
+        StringBuilder out = new StringBuilder();
+        while (matcher.find()) {
+            matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group("prefix") + withoutSable(matcher.group("value")) + matcher.group("suffix")));
+        }
+        matcher.appendTail(out);
+        return out.toString();
+    }
+
+    private static String withoutSable(String value) {
+        String trimmed = value.trim();
+        String inner = trimmed.startsWith("[") ? trimmed.substring(1, trimmed.lastIndexOf(']')) : trimmed;
+        java.util.List<String> kept = new java.util.ArrayList<>();
+        for (String item : inner.split(",")) {
+            String t = item.trim();
+            if (!t.isEmpty() && !t.equals("\"-sable\"") && !t.equals("'-sable'")) {
+                kept.add(t);
+            }
+        }
+        return "[" + String.join(", ", kept) + "]";
     }
 
     /**
@@ -323,6 +416,39 @@ public final class SableVoxyOverride {
         } catch (Exception error) {
             System.err.println("[Boxy] Warning: could not apply in-memory Voxy/Sable override: " + error.getMessage());
             return false;
+        }
+    }
+
+    /** Drops sable removals from voxy's loaded overrides; this launch's sorter would warn on them. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void tryUnpatchInMemory() {
+        try {
+            Class<?> config = Class.forName("net.neoforged.fml.loading.FMLConfig");
+            java.lang.reflect.Field field = config.getDeclaredField("dependencyOverrides");
+            field.setAccessible(true);
+            if (!(field.get(null) instanceof java.util.Map<?, ?> map) || !(map.get(TARGET_MOD) instanceof java.util.List<?> existing)) {
+                return;
+            }
+            java.util.List<Object> kept = new java.util.ArrayList<>();
+            for (Object item : existing) {
+                if (!isSableRemoval(item)) {
+                    kept.add(item);
+                }
+            }
+            if (kept.size() == existing.size()) {
+                return;
+            }
+            java.util.Map<Object, Object> copy = new java.util.HashMap<>(map);
+            if (kept.isEmpty()) {
+                copy.remove(TARGET_MOD);
+            } else {
+                copy.put(TARGET_MOD, java.util.List.copyOf(kept));
+            }
+            field.set(null, java.util.Collections.unmodifiableMap(copy));
+        } catch (ClassNotFoundException missing) {
+            // Not under FML.
+        } catch (Exception error) {
+            System.err.println("[Boxy] Warning: could not drop in-memory Voxy/Sable override: " + error.getMessage());
         }
     }
 

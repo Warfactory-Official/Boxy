@@ -59,6 +59,7 @@ public final class ColumnSnapshotter {
         FriendlyByteBuf biomeScratch = SCRATCH_BIOME_BUF.get();
         ArrayList<ColumnSnapshot.SectionSnapshot> included = SCRATCH_SECTIONS.get();
         included.clear();
+        int keepFrom = SurfaceMask.keepFrom(chunk);
 
         for (int i = 0; i < sections.length; i++) {
             LevelChunkSection section = sections[i];
@@ -68,6 +69,12 @@ public final class ColumnSnapshotter {
 
             int sectionY = minSectionY + i;
             SectionPos sectionPos = SectionPos.of(cx, sectionY, cz);
+            if (sectionY < keepFrom) {
+                included.add(new ColumnSnapshot.SectionSnapshot(sectionY, (short) 4096,
+                        SurfaceMask.filler(level.dimension(), sectionY), biomeBytes(section, biomeScratch), null,
+                        snapshotLight(skyLightListener.getDataLayerData(sectionPos))));
+                continue;
+            }
             byte[] blockLight = snapshotLight(blockLightListener.getDataLayerData(sectionPos));
             if (section.hasOnlyAir() && blockLight == null) {
                 continue;
@@ -84,20 +91,23 @@ public final class ColumnSnapshotter {
                 states.release();
             }
 
-            biomeScratch.clear();
-            section.getBiomes().write(biomeScratch);
-            byte[] biomeBytes = new byte[biomeScratch.readableBytes()];
-            biomeScratch.readBytes(biomeBytes);
-
             short nonEmptyBlockCount = ((AccessorLevelChunkSection) (Object) section).boxy$getNonEmptyBlockCount();
             included.add(new ColumnSnapshot.SectionSnapshot(
-                    sectionY, nonEmptyBlockCount, statesCopy, biomeBytes, blockLight, skyLight));
+                    sectionY, nonEmptyBlockCount, statesCopy, biomeBytes(section, biomeScratch), blockLight, skyLight));
         }
 
         ColumnSnapshot snapshot = new ColumnSnapshot(cx, cz,
                 included.toArray(new ColumnSnapshot.SectionSnapshot[0]));
         included.clear(); // don't let the scratch list pin container copies and light arrays until next call
         return snapshot;
+    }
+
+    private static byte[] biomeBytes(LevelChunkSection section, FriendlyByteBuf scratch) {
+        scratch.clear();
+        section.getBiomes().write(scratch);
+        byte[] bytes = new byte[scratch.readableBytes()];
+        scratch.readBytes(bytes);
+        return bytes;
     }
 
     /**

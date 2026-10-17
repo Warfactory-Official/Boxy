@@ -16,6 +16,15 @@ public class VSSServerConfig extends JsonConfig {
    public int generationTimeoutSeconds = 60;
    public int dirtyBroadcastIntervalSeconds = 2;
    public boolean liveDirtyUpdates = true;
+   /**
+    * Fog of war: a column's changes reach a player only within this distance; beyond it the client keeps the
+    * version it last saw (no dirty push, revalidation answered up to date).
+    */
+   public int liveDistanceChunks = 24;
+   /** Beyond liveDistanceChunks columns come from a region copy refreshed this often (BaselineSnapshots). 0 = off: client keeps its version, a client holding none gets live content. */
+   public int baselineRefreshMinutes = 360;
+   /** Anti-x-ray: sections wholly below the column's surface - 8 sent as filler (SurfaceMask). */
+   public boolean surfaceOnlyLods = true;
    // Loaded columns are no longer serialized inline during the probe; they acquire a syncOnLoad permit and
    // are serialized on the next tick, so they now hold permits that the old inline path never took. Sized to
    // match the per-player probe cap so a burst of loaded chunks isn't immediately pushed into the waiting
@@ -27,10 +36,10 @@ public class VSSServerConfig extends JsonConfig {
    public int perDimensionTimestampCacheSizeMB = 32;
    public boolean extendEntityTracking = true;
    public List<String> trackedEntityTypes = new ArrayList<>(List.of("minecraft:player"));
-   public int entityTrackingDistanceChunks = 32;
-   public boolean forceLoadTrackedEntities = false;
+   public int entityTrackingDistanceChunks = 94;
+   public boolean forceLoadTrackedEntities = true;
    /** Square chunk radius around each discovered entity activated by a nearby player. */
-   public int forceLoadRadiusChunks = 2;
+   public int forceLoadRadiusChunks = 0;
    /**
     * Wall-clock budget, in microseconds, for everything this mod does to live chunks on the server thread in
     * one tick: probing which requested columns are loaded, plus serializing the ones the router asked for.
@@ -57,6 +66,8 @@ public class VSSServerConfig extends JsonConfig {
    @Override
    protected void validate() {
       this.lodDistanceChunks = Math.clamp((long)this.lodDistanceChunks, 1, 512);
+      this.liveDistanceChunks = Math.clamp((long)this.liveDistanceChunks, 1, 512);
+      this.baselineRefreshMinutes = Math.clamp((long)this.baselineRefreshMinutes, 0, 10080);
       this.bytesPerSecondLimitPerPlayer = Math.clamp((long)this.bytesPerSecondLimitPerPlayer, 1024, 104857600);
       this.diskReaderThreads = Math.clamp((long)this.diskReaderThreads, 1, 64);
       this.sendQueueLimitPerPlayer = Math.clamp((long)this.sendQueueLimitPerPlayer, 1, 100000);
@@ -70,7 +81,7 @@ public class VSSServerConfig extends JsonConfig {
       this.generationConcurrencyLimitPerPlayer = Math.clamp((long)this.generationConcurrencyLimitPerPlayer, 1, 1000);
       this.perDimensionTimestampCacheSizeMB = Math.clamp((long)this.perDimensionTimestampCacheSizeMB, 1, 256);
       this.entityTrackingDistanceChunks = Math.clamp((long)this.entityTrackingDistanceChunks, 1, 512);
-      this.forceLoadRadiusChunks = Math.clamp((long)this.forceLoadRadiusChunks, 1, 64);
+      this.forceLoadRadiusChunks = Math.clamp((long)this.forceLoadRadiusChunks, 0, 64);
       if (this.probeBudgetMicros != 0) {
          this.probeBudgetMicros = Math.clamp((long)this.probeBudgetMicros, 100, 25000);
       }

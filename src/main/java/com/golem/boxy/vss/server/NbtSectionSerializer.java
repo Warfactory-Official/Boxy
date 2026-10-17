@@ -12,6 +12,7 @@ import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
@@ -44,13 +45,13 @@ final class NbtSectionSerializer {
 
     private NbtSectionSerializer() {}
 
-    static byte[] readAndSerializeSections(ChunkMap chunkMap, RegistryAccess registryAccess, int cx, int cz) throws Exception {
+    static byte[] readAndSerializeSections(ChunkMap chunkMap, RegistryAccess registryAccess, ServerLevel level, int cx, int cz) throws Exception {
         Optional<CompoundTag> optionalTag = chunkMap.read(new ChunkPos(cx, cz)).get(10L, TimeUnit.SECONDS);
-        if (optionalTag.isEmpty()) {
-            return null;
-        }
+        return optionalTag.isEmpty() ? null : serialize(optionalTag.get(), registryAccess, level);
+    }
 
-        CompoundTag chunkNbt = optionalTag.get();
+    /** @return null unless FULL */
+    static byte[] serialize(CompoundTag chunkNbt, RegistryAccess registryAccess, ServerLevel level) {
         String statusStr = chunkNbt.contains("Status", Tag.TAG_STRING) ? chunkNbt.getString("Status") : null;
         if (statusStr == null || ChunkStatus.byName(statusStr) != ChunkStatus.FULL) {
             return null;
@@ -63,14 +64,25 @@ final class NbtSectionSerializer {
         if (sectionsList.isEmpty()) {
             return new byte[0];
         }
+        int keepFrom = SurfaceMask.keepFrom(chunkNbt, level);
 
         ArrayList<ParsedSection> parsed = PARSED_SECTIONS.get();
         parsed.clear();
         try {
+            // Filler for masked sections the NBT omits (all-air, unlit); present ones are replaced below.
+            boolean[] masked = new boolean[Math.max(0, Math.min(keepFrom, level.getMaxSection()) - level.getMinSection())];
             for (int idx = 0; idx < sectionsList.size(); idx++) {
                 CompoundTag sectionTag = sectionsList.getCompound(idx);
                 int sectionY = sectionTag.contains("Y") ? sectionTag.getInt("Y") : Integer.MIN_VALUE;
                 if (sectionY == Integer.MIN_VALUE) {
+                    continue;
+                }
+                if (sectionY >= level.getMinSection() && sectionY < keepFrom) {
+                    masked[sectionY - level.getMinSection()] = true;
+                    PalettedContainerRO<Holder<Biome>> biomes = sectionTag.contains("biomes", Tag.TAG_COMPOUND)
+                            ? codecs.biomeCodec.parse(NbtOps.INSTANCE, sectionTag.getCompound("biomes")).result().orElse(null) : null;
+                    byte[] skyLightData = sectionTag.contains("SkyLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("SkyLight") : EMPTY;
+                    parsed.add(new ParsedSection(sectionY, filler(level, sectionY, biomes, codecs), EMPTY, skyLightData));
                     continue;
                 }
                 byte[] blockLightData = sectionTag.contains("BlockLight", Tag.TAG_BYTE_ARRAY) ? sectionTag.getByteArray("BlockLight") : EMPTY;
@@ -82,6 +94,12 @@ final class NbtSectionSerializer {
                 }
             }
 
+            for (int i = 0; i < masked.length; i++) {
+                if (!masked[i]) {
+                    int sectionY = level.getMinSection() + i;
+                    parsed.add(new ParsedSection(sectionY, filler(level, sectionY, null, codecs), EMPTY, EMPTY));
+                }
+            }
             if (parsed.isEmpty()) {
                 return new byte[0];
             }
@@ -157,6 +175,11 @@ final class NbtSectionSerializer {
             }
         }
         return section;
+    }
+
+    private static LevelChunkSection filler(ServerLevel level, int sectionY, PalettedContainerRO<Holder<Biome>> biomes, CodecCache codecs) {
+        return new LevelChunkSection(SurfaceMask.filler(level.dimension(), sectionY), biomes != null ? biomes
+                : new PalettedContainer<>(codecs.biomeRegistry.asHolderIdMap(), codecs.defaultBiome, PalettedContainer.Strategy.SECTION_BIOMES));
     }
 
     private record ParsedSection(int sectionY, LevelChunkSection section, byte[] blockLight, byte[] skyLight) {}

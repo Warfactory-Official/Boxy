@@ -129,7 +129,8 @@ public final class ClientNetworking {
             if (serverData != null && serverData.ip != null) {
                 serverAddr = serverData.ip;
             } else if (spServer != null) {
-                Path worldDir = spServer.getWorldPath(LevelResource.ROOT).getFileName();
+                // getWorldPath(ROOT) ends in "." => normalize, or every world shares one cache key.
+                Path worldDir = spServer.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().getFileName();
                 serverAddr = "local:" + (worldDir != null ? worldDir : "world");
             } else {
                 serverAddr = "unknown";

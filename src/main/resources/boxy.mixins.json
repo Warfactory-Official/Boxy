@@ -10,7 +10,11 @@
     "AccessorChunkMap",
     "AccessorLevelChunkSection",
     "ChunkMapSaveHook",
+    "MixinChunkStorageBaseline",
     "MixinChunkLiveDirty",
+    "MixinLevelChunkContentEdit",
+    "MixinLiveDirtyQuietBlockEntity",
+    "MixinLiveDirtyQuietLight",
     "MixinHbmChunkCarver",
     "MixinChunkMapTrackedEntity",
     "MixinServerLevelLiveDirty"

@@ -26,7 +26,7 @@ side="BOTH"
 [[dependencies.boxy]]
 modId="voxy"
 type="required"
-versionRange="[0.2.15-beta]"
+versionRange="[0.2.15-beta,0.3)"
 ordering="AFTER"
 side="CLIENT"
 

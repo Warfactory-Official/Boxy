@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** Periodically pushes changed (saved) columns to the players in range, so their LODs refresh. */
+/** Periodically pushes changed columns to the players within {@code liveDistanceChunks}, so their LODs refresh. */
 class DirtyColumnBroadcaster {
     private final MinecraftServer server;
     private final Map<UUID, PlayerRequestState> players;
@@ -73,9 +73,11 @@ class DirtyColumnBroadcaster {
                         || player.isRemoved()) {
                     continue;
                 }
+                // Every player: a fogged one must still get fresh bytes once it revalidates from within live distance.
+                state.clearDiskReadDoneForPositions(dirty);
                 int playerCx = player.getBlockX() >> 4;
                 int playerCz = player.getBlockZ() >> 4;
-                int lodDist = config.lodDistanceChunks;
+                int lodDist = Math.min(config.lodDistanceChunks, config.liveDistanceChunks);
                 int count = 0;
                 boolean sentBatch = false;
                 try {
@@ -108,7 +110,6 @@ class DirtyColumnBroadcaster {
 
     private void sendBatch(ServerPlayer player, PlayerRequestState state, int count) {
         long[] result = java.util.Arrays.copyOf(this.positionFilterBuffer, count);
-        state.clearDiskReadDoneForPositions(result);
         VssChannels.sendToClient(player, new DirtyColumnsS2CPayload(result));
     }
 }

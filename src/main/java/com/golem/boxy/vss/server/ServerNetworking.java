@@ -124,6 +124,7 @@ public final class ServerNetworking {
                 VSSConstants.PROTOCOL_VERSION,
                 effectiveEnabled,
                 config.lodDistanceChunks,
+                config.liveDistanceChunks,
                 serverCaps,
                 config.syncOnLoadRateLimitPerPlayer,
                 config.syncOnLoadConcurrencyLimitPerPlayer,

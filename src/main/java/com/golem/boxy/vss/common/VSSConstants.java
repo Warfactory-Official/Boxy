@@ -2,7 +2,7 @@ package com.golem.boxy.vss.common;
 
 public final class VSSConstants {
    public static final String MOD_ID = "boxy";
-   public static final int PROTOCOL_VERSION = 20;
+   public static final int PROTOCOL_VERSION = 21;
    public static final long DIRTY_REFRESH_TIMESTAMP = -2L;
    public static final long NANOS_PER_SECOND = 1000000000L;
    public static final long NANOS_PER_MS = 1000000L;

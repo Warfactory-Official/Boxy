@@ -476,6 +476,10 @@ public abstract class OffThreadProcessor<PlayerState extends PlayerStateAccess, 
       this.requestRouter.routeAll(snapshot, this.players, this::submitDiskRead, this::requestLiveSerialize, this::buildAndEnqueueColumnPayload, this.cycleNow);
    }
 
+   public SequenceCounter sequence() {
+      return this.ctx.sequence();
+   }
+
    public ProcessingDiagnostics getDiagnostics() {
       return this.ctx.diagnostics();
    }

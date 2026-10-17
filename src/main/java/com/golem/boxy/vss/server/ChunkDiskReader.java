@@ -79,7 +79,7 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
             long position = PositionUtil.packPosition(x, z);
             byte[] bytes = forceFresh ? null : bytesCache.get(dimension, position);
             if (bytes == null) {
-                bytes = NbtSectionSerializer.readAndSerializeSections(map, registries, x, z);
+                bytes = NbtSectionSerializer.readAndSerializeSections(map, registries, level, x, z);
                 if (bytes != null && !forceFresh) bytesCache.put(dimension, position, bytes);
             }
             if (bytes == null) {

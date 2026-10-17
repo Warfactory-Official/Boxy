@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.mixin;
 
+import com.golem.boxy.vss.common.tracking.LiveDirtyChunk;
 import com.golem.boxy.vss.server.RequestProcessingService;
 import com.golem.boxy.vss.server.ServerNetworking;
 import net.minecraft.server.level.ChunkMap;
@@ -12,9 +13,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Dirty-column live sync: when {@link ChunkMap}{@code .save(ChunkAccess)} succeeds, mark that
- * column dirty so the server re-pushes it to clients (via {@code DirtyColumnBroadcaster}). No-op when the VSS service
- * is not running.
+ * Dirty-column live sync: when {@link ChunkMap}{@code .save(ChunkAccess)} succeeds after a content edit, mark that
+ * column dirty so the server re-pushes it to clients (via {@code DirtyColumnBroadcaster}). Light-only saves skipped:
+ * they follow every FULL reload. No-op when the VSS service is not running.
  */
 @Mixin(ChunkMap.class)
 public class ChunkMapSaveHook {
@@ -26,7 +27,7 @@ public class ChunkMapSaveHook {
     // aborting ChunkMap's class transform (which would crash world load).
     @Inject(method = "save", at = @At("RETURN"), require = 0)
     private void boxy$onChunkSaved(ChunkAccess chunk, CallbackInfoReturnable<Boolean> cir) {
-        if (Boolean.TRUE.equals(cir.getReturnValue())) {
+        if (Boolean.TRUE.equals(cir.getReturnValue()) && ((LiveDirtyChunk) chunk).boxy$takeContentEdited()) {
             RequestProcessingService service = ServerNetworking.getRequestService();
             if (service != null) {
                 if (this.boxy$cachedDimension == null) {

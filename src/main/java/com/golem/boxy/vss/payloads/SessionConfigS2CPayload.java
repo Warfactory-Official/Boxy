@@ -15,6 +15,7 @@ public record SessionConfigS2CPayload(
         int protocolVersion,
         boolean enabled,
         int lodDistanceChunks,
+        int liveDistanceChunks,
         int serverCapabilities,
         int syncOnLoadRateLimitPerPlayer,
         int syncOnLoadConcurrencyLimitPerPlayer,
@@ -33,6 +34,7 @@ public record SessionConfigS2CPayload(
         buf.writeVarInt(protocolVersion);
         buf.writeBoolean(enabled);
         buf.writeVarInt(lodDistanceChunks);
+        buf.writeVarInt(liveDistanceChunks);
         buf.writeVarInt(serverCapabilities);
         buf.writeVarInt(syncOnLoadRateLimitPerPlayer);
         buf.writeVarInt(syncOnLoadConcurrencyLimitPerPlayer);
@@ -53,6 +55,7 @@ public record SessionConfigS2CPayload(
         int version = buf.readVarInt();
         boolean enabled = buf.readBoolean();
         int lodDist = buf.readVarInt();
+        int liveDist = buf.readVarInt();
         int serverCaps = buf.readVarInt();
         int syncRate = buf.readVarInt();
         int syncConc = buf.readVarInt();
@@ -67,7 +70,7 @@ public record SessionConfigS2CPayload(
         for (int i = 0; i < count; i++) {
             entTypes.add(buf.readUtf(MAX_ENTITY_ID_LENGTH));
         }
-        return new SessionConfigS2CPayload(version, enabled, lodDist, serverCaps, syncRate, syncConc, genRate, genConc,
+        return new SessionConfigS2CPayload(version, enabled, lodDist, liveDist, serverCaps, syncRate, syncConc, genRate, genConc,
                 genEnabled, bwLimit, entEnabled, entDist, entTypes);
     }
 }

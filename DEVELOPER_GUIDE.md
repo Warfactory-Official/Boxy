@@ -8,7 +8,7 @@ There is no service-layer Boxy module, Fabric facade, bytecode remapper, synthet
 
 `BoxyVss` registers payload handlers and server services. `BoxyClient` is a separate client-only entrypoint. `src/main/resources/META-INF/neoforge.mods.toml` and `boxy.mixins.json` describe the actual shipped mod. Dedicated servers need no renderer dependencies.
 
-Dependency baseline: NeoForge 21.1.248, Voxy 0.2.15-beta from the selected multiversion source, Sodium 0.8.12-beta.2, optional Iris 1.8.14-beta.1. Voxy uses internal APIs, not a stable addon API; update the pin and test together.
+Dependency baseline: NeoForge 21.1.248, Voxy 0.2.15-beta..0.2.x (0.2.17 tested) from the selected multiversion source, Sodium 0.8.12-beta.2, optional Iris 1.8.14-beta.1. Voxy uses internal APIs, not a stable addon API; update the pin and test together.
 
 ## Source Layout
 
@@ -22,7 +22,7 @@ Dependency baseline: NeoForge 21.1.248, Voxy 0.2.15-beta from the selected multi
 | `server/ChunkDiskReader`, `NbtSectionSerializer` | Region-file reads without live chunk loading |
 | `server/SectionSerializer`, `ColumnSnapshotter`, `LiveColumnSerializer` | Live section serialization and immutable snapshots |
 | `server/ChunkGenerationService` | Bounded on-demand FULL chunk tickets |
-| `server/FrozenChunkLoader` | Optional player-owned FULL/non-ticking tickets |
+| `server/FrozenChunkLoader` | Player-owned FULL/non-ticking tickets |
 | `client/LodRequestManager`, `LodRequestPlanner`, `SpiralScanner`, `InFlightTracker` | Main-thread boundary plus worker-side scan, retry, request validation and timestamp cache |
 | `client/ClientColumnProcessor`, `VoxyClientBridge` | Off-thread decode, main-thread Voxy ingestion |
 | `client/ClientEntitySync`, `DistantEntityTicker`, `DistantEntityServerPos` | Server entity config, distant movement and vehicle pinning |
@@ -37,7 +37,7 @@ Plain helpers/interfaces must **not** live inside a configured mixin package. Do
 
 `VssPayload` implements `CustomPacketPayload`. Each message has a typed `boxy:*` ID; registration uses `RegisterPayloadHandlersEvent`, `StreamCodec`, and an optional `PayloadRegistrar` explicitly set to `HandlerThread.MAIN`.
 
-Protocol is **20**, with registrar version `boxy-1.21.1-20`. It is Boxy-to-Boxy and requires matching client/server versions. Block/biome palette values use the connected Minecraft 1.21.1 registries. Timestamp `-2` explicitly requests a dirty refresh; `-1` remains ordinary uncached discovery.
+Protocol is **21**, with registrar version `boxy-1.21.1-21`. It is Boxy-to-Boxy and requires matching client/server versions. Block/biome palette values use the connected Minecraft 1.21.1 registries. Timestamp `-2` explicitly requests a dirty refresh; `-1` remains ordinary uncached discovery.
 
 The optional `MixinHbmChunkCarver` intercepts HBM's shared crater/fallout `repairAndResend` relight future. It holds a temporary FULL ticket until the callback (with a 200-tick expiry safety net), signals dirty tracking after lighting completes, and posts `BulkTerrainUpdateEvent`. In singleplayer, `BoxyServerIngest` copies every section and its lighting directly into Voxy, including newly empty sections, independently of VSS reception and vanilla player tracking. This path respects `liveDirtyUpdates`, preserves uniform skylight, and rejects stale server-session callbacks. HBM is neither bundled nor required. Test the actual optional dependency with `runSmokeClient -Psmoke -Phbm_smoke -Phbm_jar=<jar> -Pgolemcore_jar=<jar>`; it uses the separate `run/hbm-smoke` directory and disables VSS reception in memory to verify the direct path.
 
@@ -55,9 +55,13 @@ Server tick processing drains completed work, probes loaded chunks, snapshots li
 
 On-demand generated chunks follow the same boundary: the server thread acquires the bounded FULL ticket and copies the live section state into an immutable `ColumnSnapshot`; the processing worker performs the wire encoding. Client LOD planning, cache pruning, and request bookkeeping run on the dedicated `Boxy-LOD-Planner` worker. The client thread only samples current player/chunk state, dispatches packets, validates responses, and ingests decoded columns into Voxy.
 
-Live dirty detection covers ordinary `ServerLevel.sendBlockUpdated` notifications and `ChunkAccess.setUnsaved(true)` on server `LevelChunk` instances. The latter catches bulk section edits such as HBM crater carving and fallout that bypass ordinary block notifications. Repeated true calls are intentional: a chunk can be edited again after a dirty broadcast but before autosave. Cache invalidations are coalesced once per dimension/column per drain window. The bulk hook also sees non-terrain dirty notifications (for example block-entity persistence); this favors correctness but may increase broadcast traffic in machine-heavy worlds. ProtoChunk generation and client chunks are excluded.
+Live dirty detection covers ordinary `ServerLevel.sendBlockUpdated` notifications and `ChunkAccess.setUnsaved(true)` on server `LevelChunk` instances. The latter catches bulk section edits such as HBM crater carving and fallout that bypass ordinary block notifications. Repeated true calls are intentional: a chunk can be edited again after a dirty broadcast but before autosave. Cache invalidations are coalesced once per dimension/column per drain window. ProtoChunk generation and client chunks are excluded.
 
-Generation tickets use radius **0**, giving chunk level 33/FULL without requesting block/entity ticking. Frozen entity-load tickets also use radius 0, with **player UUIDs as owners** so overlapping players cannot remove each other's tickets. Frozen loading remains default-off. `forceLoadRadiusChunks` is a square radius around each discovered entity, not the player. A compatible player within `entityTrackingDistanceChunks` activates that entity's window; overlapping windows are deduplicated per player. Only chunk coordinates are cached, so activation conservatively measures distance to the chunk boundary and native tracking applies the exact entity distance after loading.
+- Quiet `setUnsaved` sources (not LOD content): `ChunkHolder.sectionLightChanged`, `setLightCorrect`, attachment `setData`/`removeData`, `Level.blockEntityChanged`. Counted => FULL reload relights => dirty => client refresh => reload, forever (alpha.1: ~4.7 reloads/tick on an idle strip).
+- Light engine reaches a loaded chunk via `ImposterProtoChunk`, which forwards `setUnsaved` => quiet flag set on the wrapped `LevelChunk`, not the imposter.
+- `ChunkMap.save` hook marks only after a content edit since the last save: `LevelChunk.setBlockState` (incl. un-notified flag-0 sets), non-quiet `setUnsaved`, or worldgen promotion.
+
+Generation tickets use radius **0**, giving chunk level 33/FULL without requesting block/entity ticking. Frozen entity-load tickets also use radius 0, with **player UUIDs as owners** so overlapping players cannot remove each other's tickets. Frozen loading default-on, `forceLoadRadiusChunks` default 0 (entity's own chunk: already generated, no worldgen); square radius around each discovered entity, not the player. A compatible player within `entityTrackingDistanceChunks` activates that entity's window; overlapping windows are deduplicated per player. Only chunk coordinates are cached, so activation conservatively measures distance to the chunk boundary and native tracking applies the exact entity distance after loading.
 
 Discovered non-player entities are indexed by UUID/type/chunk in each dimension's `data/boxy-discovered-entities-v1.dat` SavedData, including while force-loading is disabled. Discovery requires the entity to have been loaded at least once; this is not an offline scan of old world files. Movement updates the index, chunk unload preserves it, and destruction or dimension departure removes the old entry. Stale entries are checked in bounded batches only after terrain and asynchronous entity storage are loaded. The persistent index uses spatial buckets for player queries. Player logout, dimension changes, tracking disablement and server shutdown release tickets, but retain discoveries. Loading can generate neighboring terrain; cost scales with the union of active entity windows. Entities outside normal ticking chunks remain frozen.
 
@@ -66,6 +70,27 @@ The edit hook on `ServerLevel.sendBlockUpdated` marks loaded columns dirty immed
 The client decoder has world/session-owned queues bounded by both column count and a 64 MiB encoded-byte budget. Deserialization can run on a worker; ingestion and Voxy engine acquisition run on the client thread, serialized against client session shutdown. Late results from a previous level/session are discarded. Requests are matched by ID, dimension, and position, and are acknowledged/cached only after successful ingestion. Malformed sections and failed ingestion leave terrain retryable.
 
 On a cached-column update, omitted sections are ingested as air to clear structures that disappeared. An entirely empty payload is also an update, not something to silently discard. The retained protocol deliberately omits all-air sections without block light; changes to that optimization require checking all three serializers and the client together.
+
+## Fog of War
+
+- `liveDistanceChunks` (server, default 24): changes reach a player only within it. Beyond: no dirty push; served from the baseline copy below, else (no copy yet / `baselineRefreshMinutes` 0) timestamp `> 0` answered up to date, timestamp `<= 0` gets live content.
+- Baseline (`BaselineSnapshots`, `baselineRefreshMinutes` default 360): `<world>/data/boxy_baseline/<epoch>/<dim>/r.*.mca`, region copy, unchanged (size + mtime) hardlinked to the previous epoch. Response stamp = copy's per-chunk header save time; client stamp `>=` it => up to date. No save flush (unsaved = older = no leak); torn chunk => `xPos`/`zPos` mismatch => treated absent. Copy lacks the chunk or holds it below FULL => first FULL `ChunkStorage.write` frozen into `<epoch>/late/<dim>` (`MixinChunkStorageBaseline`, single writer thread), served after the copy; leak window = generation -> first FULL save (~10 s). Neither: stamp `> 0` up to date, else normal route. Reader saturated => rate limited, never live. Harness gate: `mc-harness/scenarios/boxy_baseline.mjs`.
+- Client revalidates any column validated or received beyond `liveDistanceChunks - 2` on entering it (`farValidated`); margin = server judges by its own lagging player position.
+- Dirty drain clears `diskReadDone` for every player, fogged or not; else revalidation from within live distance is answered up to date forever.
+- Harness gate: `mc-harness/scenarios/boxy_fog.mjs`.
+
+## Surface-Only LOD
+
+- `surfaceOnlyLods` (server, default true): sections wholly below `minSurface - 8` sent as uniform filler (stone / deepslate below y 0 / netherrack / end stone), no block light. `minSurface` = column min over xz of `min(OCEAN_FLOOR, MOTION_BLOCKING_NO_LEAVES)`: sea floor under water, ground under canopy.
+- Both serializers (`ColumnSnapshotter`, `NbtSectionSerializer`); masked all-air sections are emitted as filler, not omitted (omitted = air on the client).
+- Singleplayer `BoxyServerIngest` and Voxy's own ingest of vanilla-loaded chunks stay full 3D.
+- Harness: `mc-harness/scenarios/boxy_lead.mjs mode=surface`.
+
+## Request Order
+
+- Scan spiral centered on the lead point `player + velocity * 8 s`, clamped to half the LOD distance; range and vanilla exclusion stay player-relative. 300 km/h => 41 chunks ahead. Lead shift => confirmed rings reset.
+- Scan cadence 20 ticks, never postponed: chunk cross / lead shift resetting the counter => no scan above 0.8 b/t (fast vehicle got 0 columns).
+- Harness: `mc-harness/scenarios/boxy_lead.mjs`.
 
 ## Cache Boundaries
 
@@ -105,6 +130,8 @@ Iris/shaderpack support remains rendering-sensitive. Successful launch with Iris
 Use official Mojmap names for Minecraft targets. No hand-SRG names or runtime selector remapping. Required core entity hooks fail loudly if the pinned version changes. Optional dirty/third-party fixes use `require=0` only where graceful degradation is intentional.
 
 Voxy-specific mixins remain in Boxy's own config. Do not modify Voxy's mixin JSON or jar. Upstream already supplies `/voxy`, native config, and its NeoForge Chunky integration.
+
+Sable detection: a jar declaring `modId="sable"` in a `[[mods]]` table, in `mods/` or on `java.class.path` (ModDev). Dependency tables FORBIDDEN as evidence: Voxy's own toml names sable => override written without Sable => NeoForge warning screen every launch. Voxy present, Sable absent => `-sable` removed from `fml.toml` and the loaded `FMLConfig` (NeoForge warns on an override naming an absent mod).
 
 Voxy ships a hard `sable = incompatible` gate (`"Difficult to diagnose slowdowns"`, `[0,)`, both
 sides). Boxy lifts it without touching Voxy: the isolated bootstrap writes NeoForge's supported

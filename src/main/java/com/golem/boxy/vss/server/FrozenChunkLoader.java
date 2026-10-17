@@ -13,6 +13,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.registries.BuiltInRegistries;
 import com.golem.boxy.vss.common.TrackedEntityTypes;
+import net.neoforged.neoforge.event.TagsUpdatedEvent;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
@@ -38,6 +39,8 @@ public final class FrozenChunkLoader {
     private static final int LOAD_ONLY_RADIUS = 0;
 
     private static final Map<UUID, PlayerLoad> LOADS = new HashMap<>();
+    /** {@link TrackedEntityTypes#TAG} reloaded => full rescan. */
+    private static boolean tagsChanged;
 
     private FrozenChunkLoader() {}
 
@@ -61,7 +64,8 @@ public final class FrozenChunkLoader {
     public static void onServerTick(ServerTickEvent.Post event) {
         VSSServerConfig cfg = VSSServerConfig.CONFIG;
         MinecraftServer server = event.getServer();
-        boolean typesChanged = TrackedEntityTypes.refreshServerTypes();
+        boolean typesChanged = TrackedEntityTypes.refreshServerTypes() | tagsChanged;
+        tagsChanged = false;
         for (ServerLevel level : server.getAllLevels()) {
             // EntityJoinLevelEvent and EnteringSection maintain the index as entities load and move.
             // A full scan is needed when the whitelist changes (and on the first call, when
@@ -129,6 +133,11 @@ public final class FrozenChunkLoader {
                 it.remove();
             }
         }
+    }
+
+    @SubscribeEvent
+    public static void onTagsUpdated(TagsUpdatedEvent event) {
+        if (event.getUpdateCause() == TagsUpdatedEvent.UpdateCause.SERVER_DATA_LOAD) tagsChanged = true;
     }
 
     @SubscribeEvent
