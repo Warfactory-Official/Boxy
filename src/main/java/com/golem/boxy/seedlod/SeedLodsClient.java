@@ -32,6 +32,8 @@ public final class SeedLodsClient {
    private static final int START_CHECK_TICKS = 20;
    private static int ticks;
    private static volatile boolean preparing;
+   /** A dimension whose fill failed to start; not retried until the next login, so a broken setup is logged once. */
+   private static ResourceKey<Level> failedDimension;
 
    private SeedLodsClient() {
    }
@@ -60,6 +62,7 @@ public final class SeedLodsClient {
       NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingIn event) -> SharingClient.loggedIn());
       NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut event) -> {
          SeedFiller.stop();
+         failedDimension = null;
          SharingClient.forget();
          RealColumns.clear();
       });
@@ -92,7 +95,8 @@ public final class SeedLodsClient {
          return;
       }
       ClientLevel level = client.level;
-      if (level == null || client.player == null || preparing || SeedFiller.runningIn(level.dimension())) {
+      if (level == null || client.player == null || preparing || SeedFiller.runningIn(level.dimension())
+         || level.dimension().equals(failedDimension)) {
          return;
       }
       VoxyInstance voxy = VoxyCommon.getInstance();
@@ -130,7 +134,14 @@ public final class SeedLodsClient {
       if (engine == null) {
          return;
       }
-      SeedFiller.start(world, voxy, engine, WorldIdentifier.getWorldId(id), config.threads, config.radiusChunks, config.decorate);
+      try {
+         SeedFiller.start(world, voxy, engine, WorldIdentifier.getWorldId(id), config.threads, config.radiusChunks, config.decorate);
+      } catch (RuntimeException | LinkageError failure) {
+         // start() only owns the engine reference once the filler exists.
+         engine.releaseRef();
+         failedDimension = world.dimension();
+         SeedLods.LOGGER.error("Seed LODs could not start in {}; not retrying until the next login", world.dimension().location(), failure);
+      }
    }
 
    private static double focalPixels(Minecraft client) {

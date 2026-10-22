@@ -1,6 +1,7 @@
 package com.golem.boxy.seedlod.column;
 
 import com.golem.boxy.seedlod.world.SeedWorld;
+import java.lang.reflect.Proxy;
 import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.core.QuartPos;
 import net.minecraft.util.KeyDispatchDataCodec;
@@ -38,14 +39,38 @@ public final class DensityPlan {
       this.noiseMinY = noise.minY();
       NoiseRouter router = world.randomState().router();
       AtomicInteger slots = new AtomicInteger();
-      this.exact = router.finalDensity().mapAll(new Rewire(true, slots));
-      this.coarse = router.finalDensity().mapAll(new Rewire(false, slots));
-      this.preliminary = router.initialDensityWithoutJaggedness().mapAll(new Rewire(false, slots));
+      this.exact = router.finalDensity().mapAll(c2meAware(new Rewire(true, slots)));
+      this.coarse = router.finalDensity().mapAll(c2meAware(new Rewire(false, slots)));
+      this.preliminary = router.initialDensityWithoutJaggedness().mapAll(c2meAware(new Rewire(false, slots)));
       this.markerSlots = slots.get();
    }
 
    public Probe newProbe() {
       return new Probe(this);
+   }
+
+   private static final Class<?> C2ME_BLENDING_AWARE = optionalClass("com.ishland.c2me.opts.dfc.common.ducks.IBlendingAwareVisitor");
+
+   /**
+    * C2ME's density function compiler replaces the router with compiled nodes whose {@code mapAll} only accepts a
+    * visitor that keeps its cache nodes, so unwrapping markers fails with a ClassCastException. A visitor that
+    * reports blending makes those nodes map their original, uncompiled tree instead.
+    */
+   private static DensityFunction.Visitor c2meAware(DensityFunction.Visitor visitor) {
+      if (C2ME_BLENDING_AWARE == null) {
+         return visitor;
+      }
+      return (DensityFunction.Visitor)Proxy.newProxyInstance(DensityPlan.class.getClassLoader(),
+         new Class<?>[]{DensityFunction.Visitor.class, C2ME_BLENDING_AWARE},
+         (proxy, method, args) -> method.getDeclaringClass() == C2ME_BLENDING_AWARE ? Boolean.TRUE : method.invoke(visitor, args));
+   }
+
+   private static Class<?> optionalClass(String name) {
+      try {
+         return Class.forName(name, false, DensityPlan.class.getClassLoader());
+      } catch (ClassNotFoundException | LinkageError e) {
+         return null;
+      }
    }
 
    private final class Rewire implements DensityFunction.Visitor {

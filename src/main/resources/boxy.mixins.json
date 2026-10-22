@@ -33,6 +33,7 @@
     "MixinVoxyMipperLodLight",
     "MixinVoxyIngestUniformSkyLight",
     "MixinVoxySeedLeafRequest",
+    "MixinVoxyModdedFluidBlocks",
     "MixinLevelRendererDistantEntities"
   ]
 }
