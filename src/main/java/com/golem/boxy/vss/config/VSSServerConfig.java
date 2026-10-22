@@ -25,6 +25,12 @@ public class VSSServerConfig extends JsonConfig {
    public int baselineRefreshMinutes = 360;
    /** Anti-x-ray: sections wholly below the column's surface - 8 sent as filler (SurfaceMask). */
    public boolean surfaceOnlyLods = true;
+   /**
+    * Seed LODs: send each dimension's world seed and world type to Boxy clients whose worldgen matches, so they
+    * can draw terrain beyond what this server streams. Off by default: a seed reveals ores, structures and
+    * everything below the surface that surfaceOnlyLods withholds.
+    */
+   public boolean shareSeedWithClients = false;
    // Loaded columns are no longer serialized inline during the probe; they acquire a syncOnLoad permit and
    // are serialized on the next tick, so they now hold permits that the old inline path never took. Sized to
    // match the per-player probe cap so a burst of loaded chunks isn't immediately pushed into the waiting

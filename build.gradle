@@ -161,6 +161,8 @@ tasks.register('stageClientMods', Copy) {
     into 'run/client/mods'
 }
 tasks.named('runClient') { dependsOn 'stageClientMods' }
+// IDE launches skip Gradle task dependencies; stage the client mods on every IDE project sync too.
+neoForge.ideSyncTask tasks.named('stageClientMods')
 
 tasks.named('compileJava') {
     doFirst {
@@ -352,6 +354,8 @@ if (providers.gradleProperty('smoke').isPresent()) {
             // Voxy reserves 256,000,000 free bytes before eviction; 256 MiB total causes constant churn.
             systemProperty 'voxy.geometryBufferSizeOverrideMB', providers.gradleProperty('stability_geometry_mb').orElse('1024').get()
             systemProperty 'boxy.smokeDimensions', providers.gradleProperty('dimension_smoke').isPresent().toString()
+            systemProperty 'boxy.seedlod.validate', providers.gradleProperty('seedlod_validate').orElse('0').get()
+            systemProperty 'boxy.seedlod.validateDimension', providers.gradleProperty('seedlod_validate_dim').orElse('overworld').get()
             systemProperty 'boxy.smokeHbm', providers.gradleProperty('hbm_smoke').isPresent().toString()
             systemProperty 'boxy.smokeOcclusion', providers.gradleProperty('occlusion_smoke').isPresent().toString()
             systemProperty 'boxy.smokeOcclusionDistance', providers.gradleProperty('occlusion_distance').orElse('160').get()

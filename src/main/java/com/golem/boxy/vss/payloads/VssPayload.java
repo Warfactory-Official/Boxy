@@ -7,7 +7,8 @@ import net.minecraft.resources.ResourceLocation;
 /** Boxy 1.21.1 payloads. Section palettes are specific to the negotiated Minecraft registries. */
 public sealed interface VssPayload extends CustomPacketPayload permits HandshakeC2SPayload,
         BatchChunkRequestC2SPayload, CancelRequestC2SPayload, BandwidthUpdateC2SPayload,
-        SessionConfigS2CPayload, BatchResponseS2CPayload, DirtyColumnsS2CPayload, VoxelColumnS2CPayload {
+        SessionConfigS2CPayload, BatchResponseS2CPayload, DirtyColumnsS2CPayload, VoxelColumnS2CPayload,
+        SeedRequestC2SPayload, SeedWorldS2CPayload, SeedRefusalS2CPayload {
     Type<HandshakeC2SPayload> HANDSHAKE = new Type<>(ResourceLocation.parse("boxy:handshake"));
     Type<BatchChunkRequestC2SPayload> REQUEST = new Type<>(ResourceLocation.parse("boxy:request"));
     Type<CancelRequestC2SPayload> CANCEL = new Type<>(ResourceLocation.parse("boxy:cancel"));
@@ -16,6 +17,9 @@ public sealed interface VssPayload extends CustomPacketPayload permits Handshake
     Type<BatchResponseS2CPayload> RESPONSE = new Type<>(ResourceLocation.parse("boxy:response"));
     Type<DirtyColumnsS2CPayload> DIRTY = new Type<>(ResourceLocation.parse("boxy:dirty"));
     Type<VoxelColumnS2CPayload> COLUMN = new Type<>(ResourceLocation.parse("boxy:column"));
+    Type<SeedRequestC2SPayload> SEED_REQUEST = new Type<>(ResourceLocation.parse("boxy:seed_request"));
+    Type<SeedWorldS2CPayload> SEED_WORLD = new Type<>(ResourceLocation.parse("boxy:seed_world"));
+    Type<SeedRefusalS2CPayload> SEED_REFUSAL = new Type<>(ResourceLocation.parse("boxy:seed_refusal"));
 
     void encode(FriendlyByteBuf buf);
 
@@ -30,6 +34,9 @@ public sealed interface VssPayload extends CustomPacketPayload permits Handshake
             case BatchResponseS2CPayload ignored -> RESPONSE;
             case DirtyColumnsS2CPayload ignored -> DIRTY;
             case VoxelColumnS2CPayload ignored -> COLUMN;
+            case SeedRequestC2SPayload ignored -> SEED_REQUEST;
+            case SeedWorldS2CPayload ignored -> SEED_WORLD;
+            case SeedRefusalS2CPayload ignored -> SEED_REFUSAL;
         };
     }
 }

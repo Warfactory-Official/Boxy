@@ -47,6 +47,9 @@ side="BOTH"
 [[mixins]]
 config="boxy.mixins.json"
 
+[[accessTransformers]]
+file="META-INF/accesstransformer.cfg"
+
 [[dependencies.boxy]]
 modId="iris"
 type="optional"

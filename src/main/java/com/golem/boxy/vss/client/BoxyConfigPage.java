@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.client;
 
+import com.golem.boxy.seedlod.SeedLodsConfig;
 import com.golem.boxy.vss.config.DistantEntityDepthMode;
 import com.golem.boxy.vss.config.VSSClientConfig;
 import net.caffeinemc.mods.sodium.api.config.ConfigEntryPoint;
@@ -73,6 +74,36 @@ public final class BoxyConfigPage implements ConfigEntryPoint {
                         .setTooltip(Component.literal("Recover missing full-skylight arrays when ingesting terrain. Affects newly ingested terrain only."))
                         .setBinding(v -> cfg.fillUniformSkyLight = v, () -> cfg.fillUniformSkyLight)
                         .setDefaultValue(true).setStorageHandler(storage)));
+        var seed = SeedLodsConfig.get();
+        StorageEventHandler seedStorage = seed::saveClamped;
+        page.addOptionGroup(builder.createOptionGroup().setName(Component.literal("Seed LODs"))
+                .addOption(builder.createBooleanOption(ResourceLocation.parse("boxy:seed_lods"))
+                        .setName(Component.literal("Draw terrain from seed"))
+                        .setTooltip(Component.literal("Fill Voxy from the world seed where no real terrain has arrived yet. Singleplayer, or servers that share their seed. Real terrain always replaces it."))
+                        .setBinding(v -> seed.enabled = v, () -> seed.enabled)
+                        .setDefaultValue(true).setStorageHandler(seedStorage))
+                .addOption(builder.createBooleanOption(ResourceLocation.parse("boxy:seed_from_server"))
+                        .setName(Component.literal("Use server seeds"))
+                        .setTooltip(Component.literal("Ask Boxy servers that share their seed for it. Applies on the next join."))
+                        .setBinding(v -> seed.useServerSeeds = v, () -> seed.useServerSeeds)
+                        .setDefaultValue(true).setStorageHandler(seedStorage))
+                .addOption(builder.createBooleanOption(ResourceLocation.parse("boxy:seed_decorate"))
+                        .setName(Component.literal("Seed trees and structures"))
+                        .setTooltip(Component.literal("Place trees, plants, snow and structures with Minecraft's own generation near you. Costs more CPU."))
+                        .setBinding(v -> seed.decorate = v, () -> seed.decorate)
+                        .setDefaultValue(true).setStorageHandler(seedStorage))
+                .addOption(builder.createIntegerOption(ResourceLocation.parse("boxy:seed_radius"))
+                        .setName(Component.literal("Seed fill radius"))
+                        .setTooltip(Component.literal("Chunks around you to fill, limited by Voxy's render distance."))
+                        .setRange(SeedLodsConfig.MIN_RADIUS, SeedLodsConfig.MAX_RADIUS, 16).setDefaultValue(256)
+                        .setValueFormatter(v -> Component.literal(v + " chunks"))
+                        .setBinding(v -> seed.radiusChunks = v, () -> seed.radiusChunks).setStorageHandler(seedStorage))
+                .addOption(builder.createIntegerOption(ResourceLocation.parse("boxy:seed_threads"))
+                        .setName(Component.literal("Seed fill threads"))
+                        .setTooltip(Component.literal("Background threads building seed terrain. Applies when the fill restarts."))
+                        .setRange(1, SeedLodsConfig.maxThreads(), 1).setDefaultValue(SeedLodsConfig.defaultThreads())
+                        .setValueFormatter(v -> Component.literal(String.valueOf(v)))
+                        .setBinding(v -> seed.threads = v, () -> seed.threads).setStorageHandler(seedStorage)));
         builder.registerOwnModOptions().addPage(page);
     }
 }

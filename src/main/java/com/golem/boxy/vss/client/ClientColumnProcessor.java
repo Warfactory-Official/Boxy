@@ -118,7 +118,8 @@ class ClientColumnProcessor {
             if (!current.manager.acceptsColumn(payload)) continue;
             if (decoded.data() != null && VoxyClientBridge.ingest(current.level, payload.dimension(),
                     payload.chunkX(), payload.chunkZ(), decoded.data(),
-                    current.manager.hasCachedColumn(payload.chunkX(), payload.chunkZ()))) {
+                    current.manager.hasCachedColumn(payload.chunkX(), payload.chunkZ())
+                            || com.golem.boxy.seedlod.SeedLodsClient.mayHoldSeedTerrain())) {
                 current.manager.onColumnReceived(payload.requestId(), payload.columnTimestamp());
             } else {
                 current.manager.onRateLimited(payload.requestId());

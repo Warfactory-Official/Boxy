@@ -13,5 +13,6 @@ public final class BoxyVss {
     public BoxyVss(IEventBus modBus) {
         modBus.addListener(VssChannels::register);
         ServerNetworking.init();
+        com.golem.boxy.seedlod.SeedLods.init();
     }
 }

@@ -43,6 +43,7 @@ public final class BoxyServerIngest {
         if (instance == null) return;
         var world = me.cortex.voxy.commonImpl.WorldIdentifier.of(chunk.getLevel());
         if (world == null || !instance.isIngestEnabled(world)) return;
+        com.golem.boxy.seedlod.fill.RealColumns.mark(level.dimension(), chunk.getPos().x, chunk.getPos().z);
         var light = chunk.getLevel().getLightEngine();
         var buffer = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
         try {

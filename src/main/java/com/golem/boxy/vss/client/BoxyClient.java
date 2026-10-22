@@ -8,5 +8,6 @@ import net.neoforged.fml.common.Mod;
 public final class BoxyClient {
     public BoxyClient() {
         ClientNetworking.init();
+        com.golem.boxy.seedlod.SeedLodsClient.init();
     }
 }

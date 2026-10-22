@@ -80,6 +80,8 @@ public final class BoxyClientSmoke {
             checkLightHandoff(mc);
             correctnessComplete = true;
         }
+        // After the timed checks above: it may wait for a long validation, which must not eat their budgets.
+        if (!SeedLodSmoke.check(mc)) return;
         if (PerfSampler.enabled() && PerfSampler.measuredTicks() < 400L) return;
         // End sampling before screenshot readback, disk I/O, and final success logging.
         PerfSampler.finish(mc);

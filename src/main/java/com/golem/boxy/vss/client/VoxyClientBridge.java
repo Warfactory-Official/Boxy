@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.client;
 
+import com.golem.boxy.seedlod.fill.RealColumns;
 import com.golem.boxy.vss.common.VSSLogger;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
@@ -48,6 +49,8 @@ public final class VoxyClientBridge {
             if (worldId == null) {
                 return false;
             }
+            // Mark before ingesting: a seed fill racing this column must see it as real (see RealColumns).
+            RealColumns.mark(dimension, chunkX, chunkZ);
             VoxelColumnData.SectionData[] sections = columnData.sections();
             for (VoxelColumnData.SectionData s : sections) {
                 if (!VoxelIngestService.rawIngest(worldId, s.section(), chunkX, s.sectionY(), chunkZ, s.blockLight(), s.skyLight())) return false;

@@ -17,6 +17,13 @@ public final class VssChannels {
         void onBandwidth(ServerPlayer sender, BandwidthUpdateC2SPayload payload);
     }
 
+    /** Seed LOD sharing: server side in seedlod.share.SharingServer, client side in SharingClient. */
+    public interface SeedHandler {
+        default void onSeedRequest(ServerPlayer sender, SeedRequestC2SPayload payload) {}
+        default void onSeedWorld(SeedWorldS2CPayload payload) {}
+        default void onSeedRefusal(SeedRefusalS2CPayload payload) {}
+    }
+
     public interface ClientHandler {
         void onSessionConfig(SessionConfigS2CPayload payload);
         void onBatchResponse(BatchResponseS2CPayload payload);
@@ -26,6 +33,8 @@ public final class VssChannels {
 
     public static volatile ServerHandler serverHandler;
     public static volatile ClientHandler clientHandler;
+    public static volatile SeedHandler seedServerHandler;
+    public static volatile SeedHandler seedClientHandler;
     private static boolean ready;
 
     private VssChannels() {}
@@ -49,6 +58,12 @@ public final class VssChannels {
                 (msg, ctx) -> { if (clientHandler != null) clientHandler.onDirtyColumns(msg); });
         registrar.playToClient(VssPayload.COLUMN, StreamCodec.ofMember(VoxelColumnS2CPayload::encode, VoxelColumnS2CPayload::decode),
                 (msg, ctx) -> { if (clientHandler != null) clientHandler.onVoxelColumn(msg); });
+        registrar.playToServer(VssPayload.SEED_REQUEST, StreamCodec.ofMember(SeedRequestC2SPayload::encode, SeedRequestC2SPayload::decode),
+                (msg, ctx) -> { if (seedServerHandler != null) seedServerHandler.onSeedRequest((ServerPlayer) ctx.player(), msg); });
+        registrar.playToClient(VssPayload.SEED_WORLD, StreamCodec.ofMember(SeedWorldS2CPayload::encode, SeedWorldS2CPayload::decode),
+                (msg, ctx) -> { if (seedClientHandler != null) seedClientHandler.onSeedWorld(msg); });
+        registrar.playToClient(VssPayload.SEED_REFUSAL, StreamCodec.ofMember(SeedRefusalS2CPayload::encode, SeedRefusalS2CPayload::decode),
+                (msg, ctx) -> { if (seedClientHandler != null) seedClientHandler.onSeedRefusal(msg); });
         ready = true;
     }
 
@@ -62,6 +77,12 @@ public final class VssChannels {
         if (connection != null && connection.hasChannel(payload.type())) {
             PacketDistributor.sendToServer(payload);
         }
+    }
+
+    /** True when the connected server registered {@code type}; client thread only. */
+    public static boolean serverHas(net.minecraft.network.protocol.common.custom.CustomPacketPayload.Type<?> type) {
+        var connection = net.minecraft.client.Minecraft.getInstance().getConnection();
+        return connection != null && connection.hasChannel(type);
     }
 
     public static void sendToClient(ServerPlayer player, VssPayload payload) {
