@@ -29,6 +29,10 @@ public final class BoxyClientSmoke {
             com.golem.boxy.vss.config.VSSClientConfig.CONFIG.receiveServerLods = false;
             me.cortex.voxy.client.RenderStatistics.enabled = true;
         }
+        if (Boolean.getBoolean("boxy.smokeWater")) {
+            // only streamed real terrain: seed LODs would write coarse nodes of their own around the lake
+            com.golem.boxy.seedlod.SeedLodsConfig.get().enabled = false;
+        }
         com.golem.boxy.vss.config.VSSClientConfig.CONFIG.distantEntityDepthMode =
                 com.golem.boxy.vss.config.DistantEntityDepthMode.valueOf(System.getProperty("boxy.smokeDepthMode", "PRECISE"));
         NeoForge.EVENT_BUS.addListener(this::tick);
@@ -59,6 +63,10 @@ public final class BoxyClientSmoke {
         }
         if (Boolean.getBoolean("boxy.smokeOcclusion")) {
             OcclusionSmoke.tick(mc);
+            return;
+        }
+        if (Boolean.getBoolean("boxy.smokeWater")) {
+            WaterSmoke.tick(mc);
             return;
         }
         ++ticks;

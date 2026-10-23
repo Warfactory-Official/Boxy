@@ -60,6 +60,10 @@ public final class BoxySmoke {
             OcclusionSmoke.place(player);
             return;
         }
+        if (Boolean.getBoolean("boxy.smokeWater")) {
+            WaterSmoke.place(player);
+            return;
+        }
         var level = player.serverLevel();
         var pos = new net.minecraft.world.level.ChunkPos(10, 0);
         level.getChunkSource().addRegionTicket(net.minecraft.server.level.TicketType.FORCED, pos, 0, pos);

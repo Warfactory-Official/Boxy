@@ -37,6 +37,7 @@
     "MixinLevelRendererDistantEntities",
     "MixinFlashbackMeta",
     "MixinFlashbackRecorder",
-    "MixinVoxyReplayStoragePath"
+    "MixinVoxyReplayStoragePath",
+    "MixinVoxyUnlitLightmap"
   ]
 }
