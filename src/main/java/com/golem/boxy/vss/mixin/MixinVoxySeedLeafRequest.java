@@ -1,6 +1,7 @@
 package com.golem.boxy.vss.mixin;
 
 import com.golem.boxy.seedlod.fill.VoxyDemand;
+import com.golem.boxy.vss.client.FlashbackVoxy;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import me.cortex.voxy.common.world.WorldEngine;
 import org.spongepowered.asm.mixin.Final;
@@ -17,7 +18,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * next frame. Real data never produces such nodes, so while seed LODs run this declines the request quietly
  * (no warning, no reload) and tells the fill where finer detail is wanted ({@link VoxyDemand}). Loading such a
  * node as a child is fine for Voxy (it becomes a leaf) but logs "child existence of 0" each time; that one line
- * is dropped while seed LODs run.
+ * is dropped while seed LODs run. A Flashback replay reads the recorded database, seed nodes included, read-only:
+ * nothing will ever fill them, so there the request is declined just as quietly, without recording demand.
  */
 @Mixin(targets = "me.cortex.voxy.client.core.rendering.hierachical.NodeManager", remap = false)
 public abstract class MixinVoxySeedLeafRequest {
@@ -26,12 +28,15 @@ public abstract class MixinVoxySeedLeafRequest {
 
     @Inject(method = "makeLeafChildRequest", at = @At("HEAD"), cancellable = true)
     private void boxy$seedLeafWantsDetail(int nodeId, CallbackInfo ci) {
-        if (!VoxyDemand.listening()) {
+        boolean seeding = VoxyDemand.listening();
+        if (!seeding && !FlashbackVoxy.inReplay()) {
             return;
         }
         long position = nodeData.nodePosition(nodeId);
         if (nodeData.getNodeChildExistence(nodeId) == 0 && !topLevelNodes.contains(position) && WorldEngine.getLevel(position) > 0) {
-            VoxyDemand.wanted(position);
+            if (seeding) {
+                VoxyDemand.wanted(position);
+            }
             nodeData.unmarkRequestInFlight(nodeId);
             ci.cancel();
         }
@@ -39,7 +44,7 @@ public abstract class MixinVoxySeedLeafRequest {
 
     @Redirect(method = "finishRequest(ILme/cortex/voxy/client/core/rendering/hierachical/NodeChildRequest;)V", at = @At(value = "INVOKE", target = "Lme/cortex/voxy/common/Logger;warn([Ljava/lang/Object;)V"))
     private void boxy$quietSeedLeafChild(Object[] message) {
-        if (!VoxyDemand.listening()) {
+        if (!VoxyDemand.listening() && !FlashbackVoxy.inReplay()) {
             me.cortex.voxy.common.Logger.warn(message);
         }
     }

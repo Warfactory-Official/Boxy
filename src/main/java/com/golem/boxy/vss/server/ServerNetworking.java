@@ -78,6 +78,11 @@ public final class ServerNetworking {
 
     private static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
+        // a Flashback replay's world holds only recorded chunks; its LODs come from the recorded Voxy database
+        if (server.getClass().getName().equals("com.moulberry.flashback.playback.ReplayServer")) {
+            VSSLogger.info("Flashback replay server: VSS LOD streaming stays off");
+            return;
+        }
         VSSLogger.info("Starting VSS LOD request processing service");
         requestService = new RequestProcessingService(server);
     }

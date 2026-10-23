@@ -34,6 +34,9 @@
     "MixinVoxyIngestUniformSkyLight",
     "MixinVoxySeedLeafRequest",
     "MixinVoxyModdedFluidBlocks",
-    "MixinLevelRendererDistantEntities"
+    "MixinLevelRendererDistantEntities",
+    "MixinFlashbackMeta",
+    "MixinFlashbackRecorder",
+    "MixinVoxyReplayStoragePath"
   ]
 }

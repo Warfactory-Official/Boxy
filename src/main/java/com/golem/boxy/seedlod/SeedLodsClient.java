@@ -6,6 +6,7 @@ import com.golem.boxy.seedlod.share.SharingClient;
 import com.golem.boxy.seedlod.world.SeedWorld;
 import com.golem.boxy.seedlod.world.SeedWorlds;
 import com.golem.boxy.vss.client.ClientNetworking;
+import com.golem.boxy.vss.client.FlashbackVoxy;
 import com.golem.boxy.vss.client.LodRequestManager;
 import com.golem.boxy.vss.net.VssChannels;
 import com.golem.boxy.vss.payloads.SeedRefusalS2CPayload;
@@ -95,7 +96,8 @@ public final class SeedLodsClient {
          return;
       }
       ClientLevel level = client.level;
-      if (level == null || client.player == null || preparing || SeedFiller.runningIn(level.dimension())
+      // a replay's world seed is Flashback's, not the recording's
+      if (level == null || client.player == null || preparing || FlashbackVoxy.inReplay() || SeedFiller.runningIn(level.dimension())
          || level.dimension().equals(failedDimension)) {
          return;
       }
