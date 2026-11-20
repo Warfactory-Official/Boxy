@@ -4,6 +4,7 @@ import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.server.ServerNetworking;
+import com.mojang.logging.LogUtils;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
 
@@ -48,6 +49,6 @@ final class BulkTerrainSmoke {
             section.setBlockState(1, 8, 1, original, false);
             chunk.setUnsaved(true);
         }
-        com.mojang.logging.LogUtils.getLogger().info("BOXY_BULK_TERRAIN_SMOKE_OK: direct section edits, immediate cache invalidation, repeated unsaved edits, config opt-out");
+        LogUtils.getLogger().info("BOXY_BULK_TERRAIN_SMOKE_OK: direct section edits, immediate cache invalidation, repeated unsaved edits, config opt-out");
     }
 }

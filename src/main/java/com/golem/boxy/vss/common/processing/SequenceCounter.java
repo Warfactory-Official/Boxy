@@ -1,8 +1,10 @@
 package com.golem.boxy.vss.common.processing;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /** Shared by the processing thread and the baseline readers. */
 public class SequenceCounter {
-   private final java.util.concurrent.atomic.AtomicLong value = new java.util.concurrent.atomic.AtomicLong();
+   private final AtomicLong value = new AtomicLong();
 
    public SequenceCounter() {
    }

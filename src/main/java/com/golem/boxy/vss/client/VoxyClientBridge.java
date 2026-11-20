@@ -16,6 +16,7 @@ import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 
 import java.util.OptionalInt;
+import net.minecraft.client.Minecraft;
 
 /**
  * The one place Boxy's VSS port touches Voxy: it feeds received LOD sections straight into Voxy's ingest
@@ -65,8 +66,8 @@ public final class VoxyClientBridge {
      */
     public static boolean ingest(ClientLevel level, ResourceKey<Level> dimension, int chunkX, int chunkZ, VoxelColumnData columnData,
                                boolean clearMissingSections) {
-        if (!net.minecraft.client.Minecraft.getInstance().isSameThread()) throw new IllegalStateException("Voxy ingest must run on the client thread");
-        if (net.minecraft.client.Minecraft.getInstance().level != level || !level.dimension().equals(dimension) || !isAvailable()) return false;
+        if (!Minecraft.getInstance().isSameThread()) throw new IllegalStateException("Voxy ingest must run on the client thread");
+        if (Minecraft.getInstance().level != level || !level.dimension().equals(dimension) || !isAvailable()) return false;
         try {
             WorldIdentifier worldId = WorldIdentifier.of(level);
             if (worldId == null) {

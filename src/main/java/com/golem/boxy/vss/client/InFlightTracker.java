@@ -2,6 +2,7 @@ package com.golem.boxy.vss.client;
 
 import com.golem.boxy.vss.common.PositionUtil;
 import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -129,7 +130,7 @@ class InFlightTracker {
       ObjectIterator iter = this.positionToRequestId.long2IntEntrySet().iterator();
 
       while (iter.hasNext()) {
-         it.unimi.dsi.fastutil.longs.Long2IntMap.Entry entry = (it.unimi.dsi.fastutil.longs.Long2IntMap.Entry)iter.next();
+         Long2IntMap.Entry entry = (Long2IntMap.Entry)iter.next();
          callback.accept(entry.getIntValue());
       }
    }

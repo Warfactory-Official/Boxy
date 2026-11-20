@@ -6,8 +6,13 @@ import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.payloads.BatchChunkRequestC2SPayload;
 import com.golem.boxy.vss.payloads.CancelRequestC2SPayload;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
+import com.golem.boxy.vss.payloads.VoxelColumnS2CPayload;
+import com.golem.boxy.vss.payloads.VssPayload;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.world.level.Level;
 import net.minecraft.resources.ResourceKey;
@@ -111,13 +116,13 @@ final class LodRequestPlanner {
                     int viewDistance,
                     int missingVanilla, int queuedColumns, int clientDistance, int voxyDistance,
                     boolean incremental, long worldVersion) {}
-   record Outbound(com.golem.boxy.vss.payloads.VssPayload payload, boolean[] cached) {}
-   private final java.util.ArrayList<Outbound> outbound = new java.util.ArrayList<>();
+   record Outbound(VssPayload payload, boolean[] cached) {}
+   private final ArrayList<Outbound> outbound = new ArrayList<>();
    private boolean incremental;
    private long worldVersion = -1;
 
-   java.util.List<Outbound> takeOutbound() {
-      var result = java.util.List.copyOf(outbound);
+   List<Outbound> takeOutbound() {
+      var result = List.copyOf(outbound);
       outbound.clear();
       return result;
    }
@@ -337,8 +342,8 @@ final class LodRequestPlanner {
       }
       // Scratch arrays are reused next tick; the main-thread handoff owns independent arrays.
       outbound.add(new Outbound(new BatchChunkRequestC2SPayload(
-            java.util.Arrays.copyOf(requestIds, count), java.util.Arrays.copyOf(positionBuffer, count),
-            java.util.Arrays.copyOf(timestampBuffer, count), count), cached));
+            Arrays.copyOf(requestIds, count), Arrays.copyOf(positionBuffer, count),
+            Arrays.copyOf(timestampBuffer, count), count), cached));
 
       this.metrics.recordSendCycle(count);
    }
@@ -360,7 +365,7 @@ final class LodRequestPlanner {
       return wasCached;
    }
 
-   boolean acceptsColumn(com.golem.boxy.vss.payloads.VoxelColumnS2CPayload payload) {
+   boolean acceptsColumn(VoxelColumnS2CPayload payload) {
       return payload.dimension().equals(this.lastDimension)
             && this.tracker.matches(payload.requestId(), PositionUtil.packPosition(payload.chunkX(), payload.chunkZ()));
    }

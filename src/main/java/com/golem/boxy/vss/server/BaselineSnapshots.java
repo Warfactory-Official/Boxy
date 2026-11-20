@@ -20,6 +20,7 @@ import net.minecraft.world.level.storage.LevelResource;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -30,6 +31,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -118,7 +120,7 @@ public final class BaselineSnapshots {
         Answer a;
         Map<UUID, List<Answer>> byPlayer = null;
         while ((a = this.answers.poll()) != null) {
-            if (byPlayer == null) byPlayer = new java.util.HashMap<>();
+            if (byPlayer == null) byPlayer = new HashMap<>();
             byPlayer.computeIfAbsent(a.player, k -> new ArrayList<>()).add(a);
         }
         if (byPlayer != null) {
@@ -364,7 +366,7 @@ public final class BaselineSnapshots {
             }
             return new Region(region, stamps, new BitSet(1024));
         } catch (IOException ex) {
-            throw new java.io.UncheckedIOException(ex);
+            throw new UncheckedIOException(ex);
         }
     }
 

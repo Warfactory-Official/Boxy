@@ -1,6 +1,7 @@
 package com.golem.boxy.vss.net;
 
 import com.golem.boxy.vss.common.VSSConstants;
+import net.minecraft.client.Minecraft;
 import com.golem.boxy.vss.payloads.*;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.server.level.ServerPlayer;
@@ -73,7 +74,7 @@ public final class VssChannels {
 
     /** Called only by the client-side request pipeline. Optional channels must be checked before sending. */
     public static void sendToServer(VssPayload payload) {
-        var connection = net.minecraft.client.Minecraft.getInstance().getConnection();
+        var connection = Minecraft.getInstance().getConnection();
         if (connection != null && connection.hasChannel(payload.type())) {
             PacketDistributor.sendToServer(payload);
         }

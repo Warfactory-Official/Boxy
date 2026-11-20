@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.common.processing;
 
+import com.golem.boxy.vss.common.PositionUtil;
 import org.junit.jupiter.api.Test;
 import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
@@ -7,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class DimensionIsolationTest {
     @Test
     void extremeCoordinatesCannotOverflowRangeValidation() {
-        assertEquals(Integer.MAX_VALUE, com.golem.boxy.vss.common.PositionUtil.chebyshevDistance(Integer.MIN_VALUE, Integer.MIN_VALUE, 0, 0));
+        assertEquals(Integer.MAX_VALUE, PositionUtil.chebyshevDistance(Integer.MIN_VALUE, Integer.MIN_VALUE, 0, 0));
     }
     @Test
     void sameCoordinatesInDifferentDimensionsNeverShareReads() {

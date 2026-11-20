@@ -1,28 +1,44 @@
 package com.golem.boxy.smoke;
 
+import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.server.ServerNetworking;
 import com.golem.boxy.vss.server.ColumnSnapshotter;
 import com.golem.boxy.vss.server.SectionSerializer;
 
 import com.golem.boxy.vss.mixin.AccessorChunkMap;
 import com.golem.boxy.vss.mixin.AccessorLevelChunkSection;
+import com.golem.boxy.vss.payloads.VoxelColumnS2CPayload;
+import com.golem.boxy.vss.server.ColumnSnapshot;
+import com.mojang.logging.LogUtils;
 import io.netty.buffer.Unpooled;
+import java.util.List;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.TicketType;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.animal.Pig;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameRules;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.phys.AABB;
+import net.neoforged.bus.api.EventPriority;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 
 /** Real dedicated-server smoke checks; enabled explicitly with -Psmoke -Pserver_only. */
 @Mod("boxy_smoke")
 public final class BoxySmoke {
     public BoxySmoke() {
-        var config = com.golem.boxy.vss.config.VSSServerConfig.CONFIG;
-        config.trackedEntityTypes = java.util.List.of("minecraft:player", "minecraft:pig", "minecraft:ghast");
+        var config = VSSServerConfig.CONFIG;
+        config.trackedEntityTypes = List.of("minecraft:player", "minecraft:pig", "minecraft:ghast");
         config.enableChunkGeneration = false;
         config.lodDistanceChunks = 32;
         if (Boolean.getBoolean("boxy.smokeOcclusion")) {
@@ -30,28 +46,28 @@ public final class BoxySmoke {
             config.entityTrackingDistanceChunks = Math.max(32, OcclusionSmoke.ENTITY_X / 16 + 4);
         }
         if (Boolean.getBoolean("boxy.perf")) {
-            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.HIGHEST, PerfServerSampler::beforeTick);
-            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, PerfServerSampler::tick);
-            NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.HIGHEST, PerfServerSampler::onServerStopping);
+            NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, PerfServerSampler::beforeTick);
+            NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, PerfServerSampler::tick);
+            NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, PerfServerSampler::onServerStopping);
         }
-        NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, BoxySmoke::checkServer);
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, BoxySmoke::checkServer);
         NeoForge.EVENT_BUS.addListener(BoxySmoke::placeDistantPig);
     }
 
-    private static void placeDistantPig(net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) {
-        if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) return;
+    private static void placeDistantPig(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
         if (Boolean.getBoolean("boxy.smokeStability")) {
-            player.setGameMode(net.minecraft.world.level.GameType.SPECTATOR);
+            player.setGameMode(GameType.SPECTATOR);
             if (Boolean.getBoolean("boxy.perf")) {
                 var level = player.serverLevel();
                 player.teleportTo(level, -74.5, 63.0, -57.5, -90.0F, 25.0F);
                 level.setDayTime(6000L);
                 level.setWeatherParameters(0, 6000, false, false);
-                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_DAYLIGHT)
+                level.getGameRules().getRule(GameRules.RULE_DAYLIGHT)
                         .set(false, level.getServer());
-                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_WEATHER_CYCLE)
+                level.getGameRules().getRule(GameRules.RULE_WEATHER_CYCLE)
                         .set(false, level.getServer());
-                level.getGameRules().getRule(net.minecraft.world.level.GameRules.RULE_DOMOBSPAWNING)
+                level.getGameRules().getRule(GameRules.RULE_DOMOBSPAWNING)
                         .set(false, level.getServer());
             }
             return;
@@ -65,11 +81,11 @@ public final class BoxySmoke {
             return;
         }
         var level = player.serverLevel();
-        var pos = new net.minecraft.world.level.ChunkPos(10, 0);
-        level.getChunkSource().addRegionTicket(net.minecraft.server.level.TicketType.FORCED, pos, 0, pos);
+        var pos = new ChunkPos(10, 0);
+        level.getChunkSource().addRegionTicket(TicketType.FORCED, pos, 0, pos);
         level.getChunk(10, 0);
-        level.getEntitiesOfClass(net.minecraft.world.entity.animal.Pig.class,
-                new net.minecraft.world.phys.AABB(159, 119, -1, 162, 122, 2)).forEach(net.minecraft.world.entity.Entity::discard);
+        level.getEntitiesOfClass(Pig.class,
+                new AABB(159, 119, -1, 162, 122, 2)).forEach(Entity::discard);
         var pig = EntityType.PIG.create(level);
         if (pig == null) throw new AssertionError("Distant pig creation failed");
         pig.setNoAi(true);
@@ -77,7 +93,7 @@ public final class BoxySmoke {
         pig.setPersistenceRequired();
         pig.moveTo(160.5, 120, 0.5);
         level.addFreshEntity(pig);
-        player.setGameMode(net.minecraft.world.level.GameType.SPECTATOR);
+        player.setGameMode(GameType.SPECTATOR);
         player.teleportTo(level, 0.5, 120, 0.5, -90, 0);
     }
 
@@ -119,16 +135,16 @@ public final class BoxySmoke {
         var chunk = level.getChunk(0, 0);
         var snapshot = ColumnSnapshotter.snapshot(server, level, chunk, 0, 0);
         ColumnSnapshotter.serialize(snapshot);
-        var emptySnapshot = new com.golem.boxy.vss.server.ColumnSnapshot(0, 0,
-                new com.golem.boxy.vss.server.ColumnSnapshot.SectionSnapshot[0]);
+        var emptySnapshot = new ColumnSnapshot(0, 0,
+                new ColumnSnapshot.SectionSnapshot[0]);
         var emptyBytes = ColumnSnapshotter.serialize(emptySnapshot);
         if (emptyBytes == null || emptyBytes.length != 0) throw new AssertionError("Empty column lost its update");
-        var emptyPayload = new com.golem.boxy.vss.payloads.VoxelColumnS2CPayload(1, 0, 0,
-                net.minecraft.world.level.Level.OVERWORLD, 123, emptyBytes);
+        var emptyPayload = new VoxelColumnS2CPayload(1, 0, 0,
+                Level.OVERWORLD, 123, emptyBytes);
         FriendlyByteBuf wire = new FriendlyByteBuf(Unpooled.buffer());
         try {
             emptyPayload.encode(wire);
-            var decoded = com.golem.boxy.vss.payloads.VoxelColumnS2CPayload.decode(wire);
+            var decoded = VoxelColumnS2CPayload.decode(wire);
             if (decoded.decompressedSections().length != 0 || wire.isReadable()) throw new AssertionError("Empty column wire round trip failed");
         } finally {
             wire.release();
@@ -139,7 +155,7 @@ public final class BoxySmoke {
         pig.moveTo(8, level.getSeaLevel() + 3, 8);
         if (!level.addFreshEntity(pig)) throw new AssertionError("Entity registration failed");
         pig.discard(); // Loads/applies ChunkMap.TrackedEntity, including both required tracking hooks.
-        com.mojang.logging.LogUtils.getLogger().info("BOXY_SMOKE_OK: standalone server, lifecycle, common mixins, palettes, snapshots, uniform lighting, entity tracking");
+        LogUtils.getLogger().info("BOXY_SMOKE_OK: standalone server, lifecycle, common mixins, palettes, snapshots, uniform lighting, entity tracking");
         EntityLoadingSmoke.start(server);
     }
 }

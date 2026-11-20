@@ -2,6 +2,7 @@ package com.golem.boxy.vss.common.voxel;
 
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
+import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import java.io.DataInputStream;
@@ -70,7 +71,7 @@ public class ColumnTimestampCache {
       ObjectIterator i = cache.insertionTimes.long2LongEntrySet().iterator();
 
       while (i.hasNext()) {
-         it.unimi.dsi.fastutil.longs.Long2LongMap.Entry e = (it.unimi.dsi.fastutil.longs.Long2LongMap.Entry)i.next();
+         Long2LongMap.Entry e = (Long2LongMap.Entry)i.next();
          long t = e.getLongValue();
          if (found < count) {
             keys[found] = e.getLongKey();
@@ -130,7 +131,7 @@ public class ColumnTimestampCache {
                   ObjectIterator iter = dimCache.timestamps.long2LongEntrySet().iterator();
 
                   while (iter.hasNext()) {
-                     it.unimi.dsi.fastutil.longs.Long2LongMap.Entry tsEntry = (it.unimi.dsi.fastutil.longs.Long2LongMap.Entry)iter.next();
+                     Long2LongMap.Entry tsEntry = (Long2LongMap.Entry)iter.next();
                      out.writeLong(tsEntry.getLongKey());
                      out.writeLong(tsEntry.getLongValue());
                   }

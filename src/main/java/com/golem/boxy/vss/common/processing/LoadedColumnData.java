@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.common.processing;
 
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /** Detached column data. Deferred encoders must capture copies, never a live chunk or level. */
@@ -19,7 +20,7 @@ public final class LoadedColumnData {
 
    public static LoadedColumnData deferred(int cx, int cz, Supplier<byte[]> encoder) {
       LoadedColumnData column = new LoadedColumnData(cx, cz, null, 0);
-      column.encoder = java.util.Objects.requireNonNull(encoder);
+      column.encoder = Objects.requireNonNull(encoder);
       return column;
    }
 

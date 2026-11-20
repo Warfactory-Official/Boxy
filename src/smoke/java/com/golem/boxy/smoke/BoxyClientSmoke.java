@@ -1,9 +1,24 @@
 package com.golem.boxy.smoke;
 
 import com.golem.boxy.vss.client.ClientNetworking;
+import com.golem.boxy.vss.client.DistantEntityLighting;
+import com.golem.boxy.vss.config.DistantEntityDepthMode;
+import com.golem.boxy.vss.config.VSSClientConfig;
+import com.mojang.logging.LogUtils;
+import java.io.File;
+import java.io.IOException;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Screenshot;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
+import net.minecraft.network.protocol.game.ClientboundLightUpdatePacket;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
@@ -23,18 +38,18 @@ public final class BoxyClientSmoke {
 
     public BoxyClientSmoke() {
         if (Boolean.getBoolean("boxy.smokeHbm")) {
-            com.golem.boxy.vss.config.VSSClientConfig.CONFIG.receiveServerLods = false;
+            VSSClientConfig.CONFIG.receiveServerLods = false;
         }
         if (Boolean.getBoolean("boxy.smokeStability")) {
-            com.golem.boxy.vss.config.VSSClientConfig.CONFIG.receiveServerLods = false;
+            VSSClientConfig.CONFIG.receiveServerLods = false;
             me.cortex.voxy.client.RenderStatistics.enabled = true;
         }
         if (Boolean.getBoolean("boxy.smokeWater")) {
             // only streamed real terrain: seed LODs would write coarse nodes of their own around the lake
             com.golem.boxy.seedlod.SeedLodsConfig.get().enabled = false;
         }
-        com.golem.boxy.vss.config.VSSClientConfig.CONFIG.distantEntityDepthMode =
-                com.golem.boxy.vss.config.DistantEntityDepthMode.valueOf(System.getProperty("boxy.smokeDepthMode", "PRECISE"));
+        VSSClientConfig.CONFIG.distantEntityDepthMode =
+                DistantEntityDepthMode.valueOf(System.getProperty("boxy.smokeDepthMode", "PRECISE"));
         NeoForge.EVENT_BUS.addListener(this::tick);
     }
 
@@ -45,7 +60,7 @@ public final class BoxyClientSmoke {
         mc.options.renderDistance().set(4);
         mc.options.simulationDistance().set(5);
         if (mc.level == null || mc.player == null) return;
-        boolean streamingReady = !com.golem.boxy.vss.config.VSSClientConfig.CONFIG.receiveServerLods
+        boolean streamingReady = !VSSClientConfig.CONFIG.receiveServerLods
                 || ClientNetworking.isServerEnabled() && ClientNetworking.getRequestManager() != null
                 && ClientNetworking.getColumnsReceived() > 0;
         if (PerfSampler.enabled() && mc.screen == null && mc.getOverlay() == null && !mc.isPaused()
@@ -94,13 +109,13 @@ public final class BoxyClientSmoke {
         // End sampling before screenshot readback, disk I/O, and final success logging.
         PerfSampler.finish(mc);
         if (!PerfSampler.enabled()) {
-            try (var image = net.minecraft.client.Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
-                image.writeToFile(new java.io.File(mc.gameDirectory, "boxy-smoke.png"));
-            } catch (java.io.IOException e) {
+            try (var image = Screenshot.takeScreenshot(mc.getMainRenderTarget())) {
+                image.writeToFile(new File(mc.gameDirectory, "boxy-smoke.png"));
+            } catch (IOException e) {
                 throw new AssertionError("Unable to capture client smoke frame", e);
             }
         }
-        com.mojang.logging.LogUtils.getLogger().info("BOXY_CLIENT_SMOKE_OK: native renderer, {} distant pig draws ({} banded), integrated VSS received {} columns",
+        LogUtils.getLogger().info("BOXY_CLIENT_SMOKE_OK: native renderer, {} distant pig draws ({} banded), integrated VSS received {} columns",
                 distantPigDraws, bandedPigDraws, ClientNetworking.getColumnsReceived());
         mc.stop();
     }
@@ -113,78 +128,78 @@ public final class BoxyClientSmoke {
         if (!mc.level.isLightUpdateQueueEmpty() || mc.level.getLightEngine().hasLightWork()) {
             throw new AssertionError("Light fixture could not settle queued updates");
         }
-        var ghast = net.minecraft.world.entity.EntityType.GHAST.create(mc.level);
+        var ghast = EntityType.GHAST.create(mc.level);
         if (ghast == null) throw new AssertionError("Cannot create light probe fixture");
         ghast.setPos(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         int light = mc.getEntityRenderDispatcher().getPackedLightCoords(ghast, 1);
         if (light == 0) throw new AssertionError("Light fixture needs a lit native chunk");
-        var probe = net.minecraft.core.BlockPos.containing(ghast.getLightProbePosition(1));
+        var probe = BlockPos.containing(ghast.getLightProbePosition(1));
         if (!mc.level.hasChunk(probe.getX() >> 4, probe.getZ() >> 4)
-                || !mc.level.getLightEngine().lightOnInSection(net.minecraft.core.SectionPos.of(probe))) {
+                || !mc.level.getLightEngine().lightOnInSection(SectionPos.of(probe))) {
             throw new AssertionError("Native light fixture is not ready");
         }
-        com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, light);
+        DistantEntityLighting.resolve(ghast, 1, light);
         ghast.setPos(1_000_000, 120, 1_000_000);
-        if (com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, 0) != light) {
+        if (DistantEntityLighting.resolve(ghast, 1, 0) != light) {
             throw new AssertionError("Missing distant lighting discarded valid native light");
         }
         ghast.setPos(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         mc.level.queueLightUpdate(() -> {});
-        if (com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, 0) != light) {
+        if (DistantEntityLighting.resolve(ghast, 1, 0) != light) {
             throw new AssertionError("Returning chunk accepted light before queued updates completed");
         }
         mc.level.pollLightUpdates();
-        if (com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, 0) != 0) {
+        if (DistantEntityLighting.resolve(ghast, 1, 0) != 0) {
             throw new AssertionError("Valid darkness was suppressed");
         }
-        com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, light);
-        var packet = new net.minecraft.network.protocol.game.ClientboundLightUpdatePacket(
-                new net.minecraft.world.level.ChunkPos(probe), mc.level.getLightEngine(), null, null);
+        DistantEntityLighting.resolve(ghast, 1, light);
+        var packet = new ClientboundLightUpdatePacket(
+                new ChunkPos(probe), mc.level.getLightEngine(), null, null);
         mc.getConnection().handleLightUpdatePacket(packet);
-        if (com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, 0) != light) {
+        if (DistantEntityLighting.resolve(ghast, 1, 0) != light) {
             throw new AssertionError("Native light packet failed to rearm a continuously loaded entity");
         }
         for (int i = 0; i < 1000 && (!mc.level.isLightUpdateQueueEmpty() || mc.level.getLightEngine().hasLightWork()); i++) {
             mc.level.pollLightUpdates();
             mc.level.getLightEngine().runLightUpdates();
         }
-        if (com.golem.boxy.vss.client.DistantEntityLighting.resolve(ghast, 1, 0) != 0) {
+        if (DistantEntityLighting.resolve(ghast, 1, 0) != 0) {
             throw new AssertionError("Completed native light packet did not release the hold");
         }
-        com.golem.boxy.vss.client.DistantEntityLighting.clear();
-        com.mojang.logging.LogUtils.getLogger().info("BOXY_LIGHT_HANDOFF_SMOKE_OK: native light availability, outgoing hold, incoming queued-light hold, live native packet invalidation, immediate valid darkness");
+        DistantEntityLighting.clear();
+        LogUtils.getLogger().info("BOXY_LIGHT_HANDOFF_SMOKE_OK: native light availability, outgoing hold, incoming queued-light hold, live native packet invalidation, immediate valid darkness");
     }
 
     private boolean checkDimensionCycle(Minecraft mc) {
         if (ticks > 1200) throw new AssertionError("Dimension transition timed out");
         if (dimensionPhase == 0 && ticks >= 60) {
             dimensionPhase = 1;
-            changeDimension(mc, net.minecraft.world.level.Level.NETHER);
-        } else if (dimensionPhase == 1 && mc.level.dimension() == net.minecraft.world.level.Level.NETHER && ++dimensionTicks >= 40) {
+            changeDimension(mc, Level.NETHER);
+        } else if (dimensionPhase == 1 && mc.level.dimension() == Level.NETHER && ++dimensionTicks >= 40) {
             dimensionPhase = 2;
             dimensionTicks = 0;
             columnsBeforeReturn = ClientNetworking.getColumnsReceived();
-            changeDimension(mc, net.minecraft.world.level.Level.OVERWORLD);
-        } else if (dimensionPhase == 2 && mc.level.dimension() == net.minecraft.world.level.Level.OVERWORLD && ++dimensionTicks >= 100) {
+            changeDimension(mc, Level.OVERWORLD);
+        } else if (dimensionPhase == 2 && mc.level.dimension() == Level.OVERWORLD && ++dimensionTicks >= 100) {
             if (ClientNetworking.getColumnsReceived() <= columnsBeforeReturn) throw new AssertionError("Terrain streaming stalled after returning dimensions");
-            com.mojang.logging.LogUtils.getLogger().info("BOXY_DIMENSION_SMOKE_OK: overworld -> nether -> overworld; terrain streaming resumed");
+            LogUtils.getLogger().info("BOXY_DIMENSION_SMOKE_OK: overworld -> nether -> overworld; terrain streaming resumed");
             dimensionPhase = 3;
         }
         return dimensionPhase == 3;
     }
 
-    private static void changeDimension(Minecraft mc, net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+    private static void changeDimension(Minecraft mc, ResourceKey<Level> dimension) {
         var server = mc.getSingleplayerServer();
         var uuid = mc.player.getUUID();
         server.execute(() -> {
             var player = server.getPlayerList().getPlayer(uuid);
             var level = server.getLevel(dimension);
             player.teleportTo(level, 0.5, 120, 0.5, -90, 0);
-            if (dimension == net.minecraft.world.level.Level.OVERWORLD) {
-                var pos = new net.minecraft.core.BlockPos(160, 119, 0);
+            if (dimension == Level.OVERWORLD) {
+                var pos = new BlockPos(160, 119, 0);
                 level.setBlockAndUpdate(pos, level.getBlockState(pos).isAir()
-                        ? net.minecraft.world.level.block.Blocks.STONE.defaultBlockState()
-                        : net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+                        ? Blocks.STONE.defaultBlockState()
+                        : Blocks.AIR.defaultBlockState());
             }
         });
     }

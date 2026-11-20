@@ -4,11 +4,15 @@ import com.golem.boxy.smoke.OcclusionSmoke;
 import com.golem.boxy.vss.client.DistantEntityDepthFix;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexSorting;
+import com.mojang.logging.LogUtils;
 import net.minecraft.world.entity.Entity;
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
+import org.lwjgl.opengl.GL45;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 
@@ -22,9 +26,9 @@ public class SmokeDepthQuery {
         boxy$measure = Boolean.getBoolean("boxy.smokeOcclusion") && entity.getUUID().equals(OcclusionSmoke.target);
         if (boxy$measure && !boxy$logged) {
             boxy$logged = true;
-            var projection = com.mojang.blaze3d.systems.RenderSystem.getProjectionMatrix();
-            com.mojang.logging.LogUtils.getLogger().info("BOXY_DEPTH_TARGET: clipMode={}, m22={}, m32={}",
-                    org.lwjgl.opengl.GL11.glGetInteger(org.lwjgl.opengl.GL45.GL_CLIP_DEPTH_MODE), projection.m22(), projection.m32());
+            var projection = RenderSystem.getProjectionMatrix();
+            LogUtils.getLogger().info("BOXY_DEPTH_TARGET: clipMode={}, m22={}, m32={}",
+                    GL11.glGetInteger(GL45.GL_CLIP_DEPTH_MODE), projection.m22(), projection.m32());
         }
         try {
             original.call(entity, x, y, z, pose, build);

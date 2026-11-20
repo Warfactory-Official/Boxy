@@ -2,6 +2,7 @@ package com.golem.boxy.vss.common;
 
 import com.golem.boxy.vss.config.VSSClientConfig;
 import com.golem.boxy.vss.config.VSSServerConfig;
+import java.util.ArrayList;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
@@ -10,6 +11,7 @@ import net.minecraft.world.entity.EntityType;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -133,8 +135,8 @@ public final class TrackedEntityTypes {
     /** Called once per server tick, not on the per-entity tracking hot path. */
     public static boolean refreshServerTypes() {
         List<String> ids = VSSServerConfig.CONFIG.trackedEntityTypes;
-        if (serverSet != null && java.util.Objects.equals(serverIds, ids)) return false;
-        serverIds = ids == null ? null : new java.util.ArrayList<>(ids);
+        if (serverSet != null && Objects.equals(serverIds, ids)) return false;
+        serverIds = ids == null ? null : new ArrayList<>(ids);
         serverSet = resolve(ids, "server trackedEntityTypes");
         return true;
     }

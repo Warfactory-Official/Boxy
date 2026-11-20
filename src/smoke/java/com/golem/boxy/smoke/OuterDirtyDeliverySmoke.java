@@ -3,6 +3,7 @@ package com.golem.boxy.smoke;
 import com.golem.boxy.vss.client.ClientNetworking;
 import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.server.ServerNetworking;
+import com.mojang.logging.LogUtils;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
@@ -58,7 +59,7 @@ final class OuterDirtyDeliverySmoke {
                 ClientNetworking.getRequestManager().onDirtyColumns(new long[]{PositionUtil.packPosition(20, 0)});
                 phase = 3;
             } else if (phase == 3 && air && ServerNetworking.getRequestService().getDirtyReloadCompletedCount() > reloadsBefore) {
-                com.mojang.logging.LogUtils.getLogger().info("BOXY_OUTER_DIRTY_SMOKE_OK: unloaded terrain refreshed through temporary FULL ticket and stale Voxy voxel cleared without player approach");
+                LogUtils.getLogger().info("BOXY_OUTER_DIRTY_SMOKE_OK: unloaded terrain refreshed through temporary FULL ticket and stale Voxy voxel cleared without player approach");
                 phase = 4;
             }
         }

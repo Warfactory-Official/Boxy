@@ -1,5 +1,6 @@
 package com.golem.boxy.smoke.mixin;
 
+import com.golem.boxy.smoke.OcclusionSmoke;
 import com.golem.boxy.vss.client.VoxyLodDepthJoin;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -15,7 +16,7 @@ public class SmokeDepthJoinControl {
     }
     @Inject(method = "joinDepth", at = @At("RETURN"))
     private static void boxy$observeJoin(CallbackInfo ci) {
-        com.golem.boxy.smoke.OcclusionSmoke.joins++;
+        OcclusionSmoke.joins++;
     }
 
     @Inject(method = "joinIfNeeded", at = @At("HEAD"), cancellable = true)

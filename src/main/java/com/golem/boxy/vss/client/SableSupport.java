@@ -1,6 +1,8 @@
 package com.golem.boxy.vss.client;
 
 import com.golem.boxy.vss.common.VSSLogger;
+import net.neoforged.fml.ModList;
+import org.lwjgl.opengl.GL13;
 
 /**
  * Optional Sable interoperability for Voxy's LOD pipeline.
@@ -30,7 +32,7 @@ public final class SableSupport {
         }
         boolean present = false;
         try {
-            present = net.neoforged.fml.ModList.get().isLoaded("sable");
+            present = ModList.get().isLoaded("sable");
         } catch (Throwable ignored) {
             present = false;
         }
@@ -47,7 +49,7 @@ public final class SableSupport {
             return;
         }
         try {
-            org.lwjgl.opengl.GL13.glActiveTexture(org.lwjgl.opengl.GL13.GL_TEXTURE0);
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
             if (!logged) {
                 logged = true;
                 VSSLogger.info("Boxy: Sable detected, resetting active texture unit after Voxy LOD pass");

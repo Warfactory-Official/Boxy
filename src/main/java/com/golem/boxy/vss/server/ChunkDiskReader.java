@@ -4,6 +4,7 @@ import com.golem.boxy.vss.common.PositionUtil;
 import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.processing.AbstractChunkDiskReader;
+import com.golem.boxy.vss.common.processing.OffThreadProcessor;
 import com.golem.boxy.vss.common.processing.ReadResultAccess;
 import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import net.minecraft.core.RegistryAccess;
@@ -11,8 +12,10 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.BiConsumer;
 
 /** Region reads without loading chunks. Every worker captures the result queue of its original session. */
 public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.ReadResult> {
@@ -32,15 +35,15 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
 
     private final SerializedColumnCache bytesCache;
     private record FreshKey(UUID player, int requestId) {}
-    private final java.util.concurrent.ConcurrentHashMap<FreshKey, Object> freshReads = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<FreshKey, Object> freshReads = new ConcurrentHashMap<>();
 
     void cancelFresh(UUID player, int requestId) {
         if (requestId == -1) freshReads.keySet().removeIf(key -> key.player().equals(player));
         else freshReads.remove(new FreshKey(player, requestId));
     }
-    private java.util.function.BiConsumer<ServerLevel, com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest> dirtyReload;
+    private BiConsumer<ServerLevel, OffThreadProcessor.LiveSerializeRequest> dirtyReload;
 
-    void setDirtyReload(java.util.function.BiConsumer<ServerLevel, com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest> reload) {
+    void setDirtyReload(BiConsumer<ServerLevel, OffThreadProcessor.LiveSerializeRequest> reload) {
         this.dirtyReload = reload;
     }
 
@@ -87,7 +90,7 @@ public class ChunkDiskReader extends AbstractChunkDiskReader<ChunkDiskReader.Rea
                 results.add(forceFresh ? saturatedResult(player, id, x, z, order) : emptyResult(player, id, x, z, order));
             } else if (forceFresh) {
                 // The disk copy proves existence, not freshness. Reacquire FULL and snapshot live terrain.
-                var request = new com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest(player, id, dimension, x, z, order);
+                var request = new OffThreadProcessor.LiveSerializeRequest(player, id, dimension, x, z, order);
                 level.getServer().execute(() -> {
                     boolean active = freshReads.remove(new FreshKey(player, id), token);
                     if (!isShutdown() && getPlayerQueue(player) == results) {

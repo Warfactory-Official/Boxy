@@ -17,6 +17,8 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.UUID;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.Level;
 
 /** Exercises real chunk entity unload/reload without a graphical client or a network connection. */
 public final class EntityLoadingSmoke {
@@ -68,7 +70,7 @@ public final class EntityLoadingSmoke {
             if (!cache.desiredChunks(player.getX(), player.getZ(), 64, 1).contains(TARGET.toLong())) {
                 throw new AssertionError("Entity discovery did not create a distant window");
             }
-            if (!DiscoveredEntities.get(server.getLevel(net.minecraft.world.level.Level.NETHER))
+            if (!DiscoveredEntities.get(server.getLevel(Level.NETHER))
                     .desiredChunks(0.5, 0.5, 64, 1).isEmpty()) {
                 throw new AssertionError("Discovery leaked across dimensions");
             }
@@ -110,8 +112,8 @@ public final class EntityLoadingSmoke {
             phase = 4;
         } else if (phase == 4 && level.getEntity(entityId) != null) {
             level.getEntity(entityId).discard();
-            if (cache.save(new net.minecraft.nbt.CompoundTag(), level.registryAccess()).getList("entities", 10)
-                    .stream().anyMatch(tag -> ((net.minecraft.nbt.CompoundTag) tag).getUUID("uuid").equals(entityId))) {
+            if (cache.save(new CompoundTag(), level.registryAccess()).getList("entities", 10)
+                    .stream().anyMatch(tag -> ((CompoundTag) tag).getUUID("uuid").equals(entityId))) {
                 throw new AssertionError("Destroyed entity remained cached");
             }
             FrozenChunkLoader.onPlayerLoggedOut(new PlayerEvent.PlayerLoggedOutEvent(player));

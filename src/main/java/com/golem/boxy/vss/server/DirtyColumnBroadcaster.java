@@ -8,6 +8,7 @@ import com.golem.boxy.vss.common.voxel.SerializedColumnCache;
 import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.net.VssChannels;
 import com.golem.boxy.vss.payloads.DirtyColumnsS2CPayload;
+import java.util.Arrays;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -109,7 +110,7 @@ class DirtyColumnBroadcaster {
     }
 
     private void sendBatch(ServerPlayer player, PlayerRequestState state, int count) {
-        long[] result = java.util.Arrays.copyOf(this.positionFilterBuffer, count);
+        long[] result = Arrays.copyOf(this.positionFilterBuffer, count);
         VssChannels.sendToClient(player, new DirtyColumnsS2CPayload(result));
     }
 }

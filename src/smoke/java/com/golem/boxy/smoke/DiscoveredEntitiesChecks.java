@@ -1,8 +1,11 @@
 package com.golem.boxy.smoke;
 
+import com.golem.boxy.vss.common.TrackedEntityTypes;
+import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.server.DiscoveredEntities;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.Arrays;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.ChunkPos;
@@ -72,15 +75,15 @@ final class DiscoveredEntitiesChecks {
         cache.remember(uuid, type, ChunkPos.asLong(-33, 0));
         assertFalse(cache.desiredChunks(528, 0, 1, 0).contains(ChunkPos.asLong(31, 0)));
         assertTrue(cache.desiredChunks(-528, 0, 1, 0).contains(ChunkPos.asLong(-33, 0)));
-        var config = com.golem.boxy.vss.config.VSSServerConfig.CONFIG;
+        var config = VSSServerConfig.CONFIG;
         var original = config.trackedEntityTypes;
         try {
-            config.trackedEntityTypes = java.util.Arrays.asList("minecraft:pig", null);
-            com.golem.boxy.vss.common.TrackedEntityTypes.refreshServerTypes();
+            config.trackedEntityTypes = Arrays.asList("minecraft:pig", null);
+            TrackedEntityTypes.refreshServerTypes();
             assertTrue(cache.desiredChunks(-528, 0, 1, 0).isEmpty());
         } finally {
             config.trackedEntityTypes = original;
-            com.golem.boxy.vss.common.TrackedEntityTypes.refreshServerTypes();
+            TrackedEntityTypes.refreshServerTypes();
         }
     }
 }

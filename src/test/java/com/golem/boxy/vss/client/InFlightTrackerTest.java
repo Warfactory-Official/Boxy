@@ -4,6 +4,7 @@ import com.golem.boxy.vss.common.PositionUtil;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -31,7 +32,7 @@ class InFlightTrackerTest {
         tracker.markPending(position, System.nanoTime() - 1000, true);
         var timedOut = new ArrayList<Long>();
         tracker.timeoutSweep(0, timedOut::add);
-        assertEquals(java.util.List.of(position), timedOut);
+        assertEquals(List.of(position), timedOut);
         assertEquals(0, tracker.size());
         assertEquals(0, tracker.generationCount());
         assertFalse(tracker.matches(id, position));

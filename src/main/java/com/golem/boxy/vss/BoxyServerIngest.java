@@ -1,6 +1,10 @@
 package com.golem.boxy.vss;
 
+import com.golem.boxy.vss.client.IngestLighting;
+import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.mixin.AccessorChunkMap;
+import com.golem.boxy.vss.server.BulkTerrainUpdateEvent;
+import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
@@ -17,6 +21,13 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.HashMap;
 import java.util.Map;
+import net.minecraft.core.SectionPos;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 
 /** Bounded integrated-server sweep of spawn chunks generated before Voxy's client session starts. */
 @EventBusSubscriber(modid = BoxyVss.MODID, value = Dist.CLIENT)
@@ -28,16 +39,16 @@ public final class BoxyServerIngest {
     private static int ticksSinceSweep;
     private static boolean bulkLogged;
     private static volatile long bulkIngestCount;
-    private static net.minecraft.server.MinecraftServer activeServer;
+    private static MinecraftServer activeServer;
 
     public static long getBulkIngestCount() { return bulkIngestCount; }
 
     private BoxyServerIngest() {}
 
     @SubscribeEvent
-    public static void onBulkTerrainUpdate(com.golem.boxy.vss.server.BulkTerrainUpdateEvent event) {
+    public static void onBulkTerrainUpdate(BulkTerrainUpdateEvent event) {
         var chunk = event.chunk();
-        if (!(chunk.getLevel() instanceof net.minecraft.server.level.ServerLevel level)
+        if (!(chunk.getLevel() instanceof ServerLevel level)
                 || level.getServer() != activeServer || !activeServer.isRunning()) return;
         var instance = VoxyCommon.getInstance();
         if (instance == null) return;
@@ -45,33 +56,33 @@ public final class BoxyServerIngest {
         if (world == null || !instance.isIngestEnabled(world)) return;
         com.golem.boxy.seedlod.fill.RealColumns.mark(level.dimension(), chunk.getPos().x, chunk.getPos().z);
         var light = chunk.getLevel().getLightEngine();
-        var buffer = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
         try {
             for (int i = 0; i < chunk.getSections().length; i++) {
                 var source = chunk.getSection(i);
                 // Voxy's worker must not read HBM's mutable palettes after this callback returns.
                 source.acquire();
-                net.minecraft.world.level.chunk.LevelChunkSection copy;
+                LevelChunkSection copy;
                 try {
-                    copy = new net.minecraft.world.level.chunk.LevelChunkSection(source.getStates().copy(), source.getBiomes().recreate());
+                    copy = new LevelChunkSection(source.getStates().copy(), source.getBiomes().recreate());
                     buffer.clear();
                     source.getBiomes().write(buffer);
                     copy.readBiomes(buffer);
                 } finally { source.release(); }
                 int y = chunk.getMinSection() + i;
-                var pos = net.minecraft.core.SectionPos.of(chunk.getPos(), y);
-                var block = light.getLayerListener(net.minecraft.world.level.LightLayer.BLOCK).getDataLayerData(pos);
-                var sky = com.golem.boxy.vss.client.IngestLighting.skyLight(
-                        light.getLayerListener(net.minecraft.world.level.LightLayer.SKY), pos);
+                var pos = SectionPos.of(chunk.getPos(), y);
+                var block = light.getLayerListener(LightLayer.BLOCK).getDataLayerData(pos);
+                var sky = IngestLighting.skyLight(
+                        light.getLayerListener(LightLayer.SKY), pos);
                 if (!VoxelIngestService.rawIngest(world, copy, chunk.getPos().x, y, chunk.getPos().z,
                         block == null ? null : block.copy(), sky == null ? null : sky.copy())) {
-                    com.golem.boxy.vss.common.VSSLogger.warn("HBM direct terrain ingest unavailable for " + chunk.getPos());
+                    VSSLogger.warn("HBM direct terrain ingest unavailable for " + chunk.getPos());
                     return;
                 }
             }
             if (!bulkLogged) {
                 bulkLogged = true;
-                com.golem.boxy.vss.common.VSSLogger.info("Boxy HBM direct terrain ingest ACTIVE: completed bulk edits feed Voxy independently of player chunk tracking");
+                VSSLogger.info("Boxy HBM direct terrain ingest ACTIVE: completed bulk edits feed Voxy independently of player chunk tracking");
             }
             bulkIngestCount++;
         } finally { buffer.release(); }
@@ -79,7 +90,7 @@ public final class BoxyServerIngest {
 
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
-        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) activeServer = player.server;
+        if (event.getEntity() instanceof ServerPlayer player) activeServer = player.server;
         sweepsLeft = 15;
         emptyStreak = 0;
         waitTicksLeft = 600;

@@ -1,6 +1,8 @@
 package com.golem.boxy.vss.server;
 
+import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.common.processing.OffThreadProcessor.LiveSerializeRequest;
+import com.golem.boxy.vss.config.VSSServerConfig;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
@@ -30,7 +32,7 @@ final class DirtyChunkReloads {
     void submit(ServerLevel level, LiveSerializeRequest request) {
         var player = server.getPlayerList().getPlayer(request.playerUuid());
         if (closed || player == null || player.serverLevel() != level) return;
-        if (!com.golem.boxy.vss.config.VSSServerConfig.CONFIG.enabled) {
+        if (!VSSServerConfig.CONFIG.enabled) {
             retry(request);
             return;
         }
@@ -68,7 +70,7 @@ final class DirtyChunkReloads {
                     copied = true;
                 }
             } catch (Throwable error) {
-                com.golem.boxy.vss.common.VSSLogger.error("Dirty chunk reload failed", error);
+                VSSLogger.error("Dirty chunk reload failed", error);
                 retry(request);
             } finally {
                 release(request, state);

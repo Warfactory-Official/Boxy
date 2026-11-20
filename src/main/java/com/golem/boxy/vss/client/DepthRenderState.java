@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.client;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.system.MemoryStack;
@@ -40,11 +41,11 @@ final class DepthRenderState {
         GL11.glDepthRange(range[0], range[1]);
         GL11.glColorMask(color[0], color[1], color[2], color[3]);
         // RenderType shards may have changed Minecraft's caches during a private-buffer flush.
-        if (depth) com.mojang.blaze3d.systems.RenderSystem.enableDepthTest();
-        else com.mojang.blaze3d.systems.RenderSystem.disableDepthTest();
-        com.mojang.blaze3d.systems.RenderSystem.depthMask(depthMask);
-        com.mojang.blaze3d.systems.RenderSystem.depthFunc(depthFunc);
-        com.mojang.blaze3d.systems.RenderSystem.colorMask(color[0], color[1], color[2], color[3]);
+        if (depth) RenderSystem.enableDepthTest();
+        else RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(depthMask);
+        RenderSystem.depthFunc(depthFunc);
+        RenderSystem.colorMask(color[0], color[1], color[2], color[3]);
         GL20.glStencilFuncSeparate(GL11.GL_FRONT, front[0], front[1], front[2]);
         GL20.glStencilMaskSeparate(GL11.GL_FRONT, front[3]);
         GL20.glStencilOpSeparate(GL11.GL_FRONT, front[4], front[5], front[6]);

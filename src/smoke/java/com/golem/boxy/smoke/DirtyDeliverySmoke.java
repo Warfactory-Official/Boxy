@@ -2,6 +2,10 @@ package com.golem.boxy.smoke;
 
 import com.golem.boxy.vss.client.ClientNetworking;
 import com.golem.boxy.vss.common.PositionUtil;
+import com.mojang.logging.LogUtils;
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
@@ -18,21 +22,21 @@ final class DirtyDeliverySmoke {
     private static int ticks;
     private static volatile Throwable failure;
     /** Reflection must run on LodRequestPlanner's single worker; the client thread only polls completion. */
-    private static java.util.concurrent.Future<?> timestampTask;
+    private static Future<?> timestampTask;
     private static Object timestampResult;
 
-    private static java.util.concurrent.Future<?> timestampTask(Object manager, long position, boolean remove) {
+    private static Future<?> timestampTask(Object manager, long position, boolean remove) {
         try {
             var plannerField = manager.getClass().getDeclaredField("planner");
             plannerField.setAccessible(true);
             Object planner = plannerField.get(manager);
             var executorField = manager.getClass().getDeclaredField("executor");
             executorField.setAccessible(true);
-            var executor = (java.util.concurrent.ExecutorService) executorField.get(manager);
+            var executor = (ExecutorService) executorField.get(manager);
             return executor.submit(() -> {
                 var timestampsField = planner.getClass().getDeclaredField("columnTimestamps");
                 timestampsField.setAccessible(true);
-                var timestamps = (it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap) timestampsField.get(planner);
+                var timestamps = (Long2LongOpenHashMap) timestampsField.get(planner);
                 if (remove) {
                     timestamps.remove(position);
                     return null;
@@ -122,7 +126,7 @@ final class DirtyDeliverySmoke {
                 chunk.setUnsaved(true);
             });
         } else if (phase == 4 && air) {
-            com.mojang.logging.LogUtils.getLogger().info("BOXY_DIRTY_DELIVERY_SMOKE_OK: native-only column inside view distance, stale section clearing, repeated live addition/removal verified in Voxy");
+            LogUtils.getLogger().info("BOXY_DIRTY_DELIVERY_SMOKE_OK: native-only column inside view distance, stale section clearing, repeated live addition/removal verified in Voxy");
             phase = 5;
         }
         return phase == 5;

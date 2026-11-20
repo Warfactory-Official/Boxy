@@ -7,12 +7,14 @@ import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.IrisVoxyRenderPipeline;
 import me.cortex.voxy.client.core.NormalRenderPipeline;
 import me.cortex.voxy.client.core.rendering.Viewport;
+import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL33;
+import org.lwjgl.opengl.GL45;
 
 /**
  * Joins current-frame LOD depth into the terrain framebuffer before tracked entities, with or without Iris.
@@ -60,11 +62,11 @@ public final class VoxyLodDepthJoin {
             var renderer = IGetVoxyRenderSystem.getNullable();
             float fogEnd = renderer == null ? RenderSystem.getShaderFogEnd() : renderer.getCapturedFogEnd();
             // The native normal pipeline skips its colour composite too in this case.
-            if (fogEnd < net.minecraft.client.Minecraft.getInstance().gameRenderer.getRenderDistance()) return;
+            if (fogEnd < Minecraft.getInstance().gameRenderer.getRenderDistance()) return;
         }
         sourcePipeline = pipeline;
         sourceViewport = viewport;
-        sourceZeroOne = GL11.glGetInteger(org.lwjgl.opengl.GL45.GL_CLIP_DEPTH_MODE) == org.lwjgl.opengl.GL45.GL_ZERO_TO_ONE;
+        sourceZeroOne = GL11.glGetInteger(GL45.GL_CLIP_DEPTH_MODE) == GL45.GL_ZERO_TO_ONE;
         targetFramebuffer = framebuffer;
         targetWidth = width;
         targetHeight = height;
@@ -123,7 +125,7 @@ public final class VoxyLodDepthJoin {
             GL20.glUniformMatrix4fv(uReMvp, false, reMvp.get(MAT_SCRATCH));
             // Projection convention is not storage convention: GL maps clip depth into the texture.
             GL20.glUniform1i(uSourceZeroOne, sourceZeroOne ? 1 : 0);
-            GL20.glUniform1i(uTargetZeroOne, GL11.glGetInteger(org.lwjgl.opengl.GL45.GL_CLIP_DEPTH_MODE) == org.lwjgl.opengl.GL45.GL_ZERO_TO_ONE ? 1 : 0);
+            GL20.glUniform1i(uTargetZeroOne, GL11.glGetInteger(GL45.GL_CLIP_DEPTH_MODE) == GL45.GL_ZERO_TO_ONE ? 1 : 0);
             boolean reverse = RenderSystem.getProjectionMatrix().m32() > 0;
             GL20.glUniform1i(uTargetReverse, reverse ? 1 : 0);
             GL11.glEnable(GL11.GL_DEPTH_TEST);

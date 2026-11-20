@@ -1,6 +1,7 @@
 package com.golem.boxy.smoke;
 
 import com.golem.boxy.vss.BoxyServerIngest;
+import com.mojang.logging.LogUtils;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
@@ -8,7 +9,9 @@ import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 
 final class HbmTerrainSmoke {
@@ -48,13 +51,13 @@ final class HbmTerrainSmoke {
                     boolean[] touched = new boolean[chunk.getSections().length];
                     touched[level.getSectionIndex(240)] = true;
                     Class.forName("com.hbm.util.ChunkCarver").getMethod("repairAndResend",
-                            net.minecraft.server.level.ServerLevel.class, net.minecraft.world.level.chunk.LevelChunk.class,
+                            ServerLevel.class, LevelChunk.class,
                             int.class, int.class, boolean[].class).invoke(null, level, chunk, 20, 0, touched);
                 } catch (Throwable error) { failure = error; }
             });
         } else if (phase == 2 && air && BoxyServerIngest.getBulkIngestCount() > before) {
-            com.mojang.logging.LogUtils.getLogger().info("BOXY_HBM_DIRECT_SMOKE_OK: actual HBM repair/relight hook cleared distant Voxy terrain with VSS reception disabled");
-            com.mojang.logging.LogUtils.getLogger().info("BOXY_CLIENT_SMOKE_OK: direct HBM integration verified");
+            LogUtils.getLogger().info("BOXY_HBM_DIRECT_SMOKE_OK: actual HBM repair/relight hook cleared distant Voxy terrain with VSS reception disabled");
+            LogUtils.getLogger().info("BOXY_CLIENT_SMOKE_OK: direct HBM integration verified");
             mc.stop();
             phase = 3;
         }

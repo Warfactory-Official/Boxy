@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -25,6 +27,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.JarFile;
+import javax.swing.BorderFactory;
 
 /** Runs before NeoForge's ordinary mod validation so Voxy can be present for the same launch. */
 public final class EarlyVoxyDownloader implements ITransformationService {
@@ -128,7 +131,7 @@ public final class EarlyVoxyDownloader implements ITransformationService {
             var entry = jar.getJarEntry("META-INF/neoforge.mods.toml");
             if (entry == null) return false;
             try (InputStream input = jar.getInputStream(entry)) {
-                String metadata = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                String metadata = new String(input.readAllBytes(), StandardCharsets.UTF_8);
                 int dependencies = metadata.indexOf("[[dependencies");
                 String mods = dependencies >= 0 ? metadata.substring(0, dependencies) : metadata;
                 return mods.matches("(?s).*\\[\\[mods\\]\\].*modId\\s*=\\s*[\\\"]voxy[\\\"].*");
@@ -168,7 +171,7 @@ public final class EarlyVoxyDownloader implements ITransformationService {
             if (!isVoxyJar(partial)) throw new IOException("Downloaded file is not a valid Voxy NeoForge jar");
             try {
                 Files.move(partial, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            } catch (AtomicMoveNotSupportedException unsupported) {
                 Files.move(partial, destination, StandardCopyOption.REPLACE_EXISTING);
             }
             progress.status("Voxy ready", copied, copied);
@@ -206,7 +209,7 @@ public final class EarlyVoxyDownloader implements ITransformationService {
                     JLabel label = new JLabel("Setting up dependencies");
                     label.setForeground(foreground);
                     label.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
-                    label.setBorder(javax.swing.BorderFactory.createEmptyBorder(12, 14, 0, 14));
+                    label.setBorder(BorderFactory.createEmptyBorder(12, 14, 0, 14));
                     JProgressBar bar = new JProgressBar();
                     bar.setPreferredSize(new Dimension(420, 18));
                     bar.setOpaque(true);
@@ -216,7 +219,7 @@ public final class EarlyVoxyDownloader implements ITransformationService {
                     bar.setStringPainted(true);
                     bar.setString("Preparing...");
                     bar.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
-                    bar.setBorder(javax.swing.BorderFactory.createLineBorder(new Color(72, 72, 84)));
+                    bar.setBorder(BorderFactory.createLineBorder(new Color(72, 72, 84)));
                     window.add(label, BorderLayout.NORTH);
                     window.add(bar, BorderLayout.CENTER);
                     window.setPreferredSize(new Dimension(460, 100));

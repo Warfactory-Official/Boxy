@@ -1,10 +1,21 @@
 package com.golem.boxy.bootstrap;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.jar.JarFile;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -92,7 +103,7 @@ public final class SableVoxyOverride {
 
     /** {@code modsDir} jars, then dev classpath jars (ModDev puts dependency mods there, not in mods/). */
     static boolean isModPresent(Path modsDir, String modId) {
-        for (String entry : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
+        for (String entry : System.getProperty("java.class.path", "").split(File.pathSeparator)) {
             if (entry.endsWith(".jar") && isModJar(Path.of(entry), modId)) {
                 return true;
             }
@@ -101,7 +112,7 @@ public final class SableVoxyOverride {
             return false;
         }
         try (var files = Files.list(modsDir)) {
-            var jars = files.filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".jar")).toList();
+            var jars = files.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")).toList();
             for (Path jar : jars) {
                 if (isModJar(jar, modId)) {
                     return true;
@@ -219,7 +230,7 @@ public final class SableVoxyOverride {
     private static String withoutSable(String value) {
         String trimmed = value.trim();
         String inner = trimmed.startsWith("[") ? trimmed.substring(1, trimmed.lastIndexOf(']')) : trimmed;
-        java.util.List<String> kept = new java.util.ArrayList<>();
+        List<String> kept = new ArrayList<>();
         for (String item : inner.split(",")) {
             String t = item.trim();
             if (!t.isEmpty() && !t.equals("\"-sable\"") && !t.equals("'-sable'")) {
@@ -380,20 +391,20 @@ public final class SableVoxyOverride {
     static boolean tryPatchInMemory() {
         try {
             Class<?> config = Class.forName("net.neoforged.fml.loading.FMLConfig");
-            java.lang.reflect.Field field = config.getDeclaredField("dependencyOverrides");
+            Field field = config.getDeclaredField("dependencyOverrides");
             field.setAccessible(true);
             Object current = field.get(null);
-            java.util.Map<String, java.util.List<?>> copy = new java.util.HashMap<>();
-            if (current instanceof java.util.Map<?, ?> map) {
+            Map<String, List<?>> copy = new HashMap<>();
+            if (current instanceof Map<?, ?> map) {
                 for (var entry : map.entrySet()) {
                     Object key = entry.getKey();
                     Object list = entry.getValue();
-                    if (key instanceof String && list instanceof java.util.List<?> items) {
-                        copy.put((String) key, new java.util.ArrayList<>(items));
+                    if (key instanceof String && list instanceof List<?> items) {
+                        copy.put((String) key, new ArrayList<>(items));
                     }
                 }
             }
-            java.util.List<?> existing = copy.get(TARGET_MOD);
+            List<?> existing = copy.get(TARGET_MOD);
             if (existing != null) {
                 for (Object item : existing) {
                     if (isSableRemoval(item)) {
@@ -402,13 +413,13 @@ public final class SableVoxyOverride {
                 }
             }
             Class<?> overrideClass = Class.forName("net.neoforged.fml.loading.FMLConfig$DependencyOverride");
-            java.lang.reflect.Constructor<?> constructor = overrideClass.getDeclaredConstructor(String.class, boolean.class);
+            Constructor<?> constructor = overrideClass.getDeclaredConstructor(String.class, boolean.class);
             constructor.setAccessible(true);
             Object sableRemoval = constructor.newInstance(REMOVED_DEP, true);
-            java.util.List<Object> updated = existing == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>((java.util.Collection<?>) existing);
+            List<Object> updated = existing == null ? new ArrayList<>() : new ArrayList<>((Collection<?>) existing);
             updated.add(sableRemoval);
-            copy.put(TARGET_MOD, java.util.List.copyOf((java.util.Collection) updated));
-            field.set(null, java.util.Collections.unmodifiableMap(copy));
+            copy.put(TARGET_MOD, List.copyOf((Collection) updated));
+            field.set(null, Collections.unmodifiableMap(copy));
             System.out.println("[Boxy] Applied in-memory Voxy/Sable dependency override for this launch");
             return true;
         } catch (ClassNotFoundException missing) {
@@ -424,12 +435,12 @@ public final class SableVoxyOverride {
     static void tryUnpatchInMemory() {
         try {
             Class<?> config = Class.forName("net.neoforged.fml.loading.FMLConfig");
-            java.lang.reflect.Field field = config.getDeclaredField("dependencyOverrides");
+            Field field = config.getDeclaredField("dependencyOverrides");
             field.setAccessible(true);
-            if (!(field.get(null) instanceof java.util.Map<?, ?> map) || !(map.get(TARGET_MOD) instanceof java.util.List<?> existing)) {
+            if (!(field.get(null) instanceof Map<?, ?> map) || !(map.get(TARGET_MOD) instanceof List<?> existing)) {
                 return;
             }
-            java.util.List<Object> kept = new java.util.ArrayList<>();
+            List<Object> kept = new ArrayList<>();
             for (Object item : existing) {
                 if (!isSableRemoval(item)) {
                     kept.add(item);
@@ -438,13 +449,13 @@ public final class SableVoxyOverride {
             if (kept.size() == existing.size()) {
                 return;
             }
-            java.util.Map<Object, Object> copy = new java.util.HashMap<>(map);
+            Map<Object, Object> copy = new HashMap<>(map);
             if (kept.isEmpty()) {
                 copy.remove(TARGET_MOD);
             } else {
-                copy.put(TARGET_MOD, java.util.List.copyOf(kept));
+                copy.put(TARGET_MOD, List.copyOf(kept));
             }
-            field.set(null, java.util.Collections.unmodifiableMap(copy));
+            field.set(null, Collections.unmodifiableMap(copy));
         } catch (ClassNotFoundException missing) {
             // Not under FML.
         } catch (Exception error) {
@@ -454,8 +465,8 @@ public final class SableVoxyOverride {
 
     private static boolean isSableRemoval(Object override) {
         try {
-            java.lang.reflect.Method modId = override.getClass().getMethod("modId");
-            java.lang.reflect.Method remove = override.getClass().getMethod("remove");
+            Method modId = override.getClass().getMethod("modId");
+            Method remove = override.getClass().getMethod("remove");
             return REMOVED_DEP.equals(modId.invoke(override)) && Boolean.TRUE.equals(remove.invoke(override));
         } catch (Exception ignored) {
             return false;

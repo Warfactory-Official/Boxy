@@ -1,6 +1,7 @@
 package com.golem.boxy.vss.client;
 
 import com.golem.boxy.vss.common.PositionUtil;
+import com.golem.boxy.vss.common.VSSConstants;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -81,7 +82,7 @@ class SpiralScanner {
          if (count >= budget) break;
          if (!PositionUtil.isOutOfRange(packed, playerCx, playerCz, lodDistance) && !isInFlight.test(packed)) {
             posBuf[count] = packed;
-            tsBuf[count++] = com.golem.boxy.vss.common.VSSConstants.DIRTY_REFRESH_TIMESTAMP;
+            tsBuf[count++] = VSSConstants.DIRTY_REFRESH_TIMESTAMP;
             syncQueued++;
          }
       }

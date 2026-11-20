@@ -21,6 +21,8 @@ import net.minecraft.client.renderer.OutlineBufferSource;
 import net.minecraft.world.entity.Entity;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL45;
 
 
 /**
@@ -162,7 +164,7 @@ public final class DistantEntityDepthFix {
     public static void render(Entity entity, double x, double y, double z, PoseStack poseStack, Runnable build) {
         DepthRenderState state = new DepthRenderState();
         var shader = RenderSystem.getShader();
-        int program = GL11.glGetInteger(org.lwjgl.opengl.GL20.GL_CURRENT_PROGRAM);
+        int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         try {
             renderBanded(entity, x, y, z, poseStack, build, state);
         } catch (RuntimeException | Error failure) {
@@ -173,14 +175,14 @@ public final class DistantEntityDepthFix {
         } finally {
             state.restore();
             RenderSystem.setShader(() -> shader);
-            org.lwjgl.opengl.GL20.glUseProgram(program);
+            GL20.glUseProgram(program);
         }
     }
 
     private static void renderBanded(Entity entity, double x, double y, double z, PoseStack poseStack,
             Runnable build, DepthRenderState state) {
         Matrix4f proj = RenderSystem.getProjectionMatrix();
-        boolean zeroToOne = GL11.glGetInteger(org.lwjgl.opengl.GL45.GL_CLIP_DEPTH_MODE) == org.lwjgl.opengl.GL45.GL_ZERO_TO_ONE;
+        boolean zeroToOne = GL11.glGetInteger(GL45.GL_CLIP_DEPTH_MODE) == GL45.GL_ZERO_TO_ONE;
         // Re-bandable only under a standard perspective projection: clip w must be -z_eye (w row = 0,0,-1,0).
         boolean perspective = Math.abs(proj.m23() + 1.0f) < 1.0e-4f && Math.abs(proj.m33()) < 1.0e-4f
                 && Math.abs(proj.m03()) < 1.0e-4f && Math.abs(proj.m13()) < 1.0e-4f;

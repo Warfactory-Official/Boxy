@@ -3,6 +3,7 @@ package com.golem.boxy.vss.mixin;
 import com.golem.boxy.vss.client.ClientEntitySync;
 import com.golem.boxy.vss.client.DistantEntityDepthFix;
 import com.golem.boxy.vss.client.DistantEntityLighting;
+import com.golem.boxy.vss.client.VoxyLodDepthJoin;
 import com.golem.boxy.vss.common.TrackedEntityTypes;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -26,7 +27,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class MixinLevelRendererDistantEntities {
     @Inject(method = "renderLevel", at = @At("HEAD"))
     private void boxy$beginDepthFrame(CallbackInfo ci) {
-        com.golem.boxy.vss.client.VoxyLodDepthJoin.beginFrame();
+        VoxyLodDepthJoin.beginFrame();
     }
     @WrapOperation(method = "renderLevel",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/LevelRenderer;isSectionCompiled(Lnet/minecraft/core/BlockPos;)Z"))
@@ -68,7 +69,7 @@ public abstract class MixinLevelRendererDistantEntities {
              MultiBufferSource bufferSource, int packedLight, Operation<Void> original) {
         int light = DistantEntityLighting.resolve(entity, partialTicks, packedLight);
         if (ClientEntitySync.enabled() && TrackedEntityTypes.clientContains(entity.getType())) {
-            com.golem.boxy.vss.client.VoxyLodDepthJoin.joinIfNeeded();
+            VoxyLodDepthJoin.joinIfNeeded();
         }
         if (!DistantEntityDepthFix.applies(entity, x, y, z, bufferSource)) {
             original.call(dispatcher, entity, x, y, z, yaw, partialTicks, poseStack, bufferSource, light);

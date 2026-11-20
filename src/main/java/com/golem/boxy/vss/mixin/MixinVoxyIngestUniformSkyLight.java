@@ -1,5 +1,6 @@
 package com.golem.boxy.vss.mixin;
 
+import com.golem.boxy.vss.client.IngestLighting;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
@@ -58,6 +59,6 @@ public class MixinVoxyIngestUniformSkyLight {
                        ordinal = 1),
               require = 0)
     private DataLayer boxy$skyLightOrUniform(LayerLightEventListener listener, SectionPos pos) {
-        return com.golem.boxy.vss.client.IngestLighting.skyLight(listener, pos);
+        return IngestLighting.skyLight(listener, pos);
     }
 }
