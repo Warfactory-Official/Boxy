@@ -9,9 +9,9 @@ import com.golem.boxy.vss.payloads.BatchChunkRequestC2SPayload;
 import com.golem.boxy.vss.payloads.CancelRequestC2SPayload;
 import com.golem.boxy.vss.payloads.HandshakeC2SPayload;
 import com.golem.boxy.vss.payloads.SessionConfigS2CPayload;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.common.NeoForge;
@@ -29,7 +29,8 @@ import net.neoforged.neoforge.event.server.ServerStoppingEvent;
  */
 public final class ServerNetworking {
     private static volatile RequestProcessingService requestService;
-    private static final Set<UUID> entitySessions = new HashSet<>();
+    /** Read by region workers via the tracking mixin. */
+    private static final Set<UUID> entitySessions = ConcurrentHashMap.newKeySet();
 
     public static boolean hasEntitySession(ServerPlayer player) {
         return entitySessions.contains(player.getUUID());

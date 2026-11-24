@@ -1,6 +1,7 @@
 package com.golem.boxy.vss.mixin;
 
 import com.golem.boxy.vss.common.VSSLogger;
+import com.golem.boxy.vss.common.tracking.DirtyColumnTracker;
 import com.golem.boxy.vss.config.VSSServerConfig;
 import com.golem.boxy.vss.server.RequestProcessingService;
 import com.golem.boxy.vss.server.ServerNetworking;
@@ -34,10 +35,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(ServerLevel.class)
 public abstract class MixinServerLevelLiveDirty {
+    // Racy cache: handle is canonical per (tracker, dimension); a lost write only repeats the lookup.
     @Unique
-    private String boxy$dimensionId;
+    private DirtyColumnTracker.Dimension boxy$dirty;
     @Unique
-    private boolean boxy$diagLogged;
+    private volatile boolean boxy$diagLogged;
 
     @Inject(method = "sendBlockUpdated", at = @At("HEAD"), require = 0)
     private void boxy$markColumnDirtyOnEdit(BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
@@ -48,16 +50,17 @@ public abstract class MixinServerLevelLiveDirty {
         if (service == null) {
             return;
         }
-        String dimension = this.boxy$dimensionId;
-        if (dimension == null) {
-            dimension = ((ServerLevel) (Object) this).dimension().location().toString();
-            this.boxy$dimensionId = dimension;
+        DirtyColumnTracker tracker = service.getDirtyTracker();
+        DirtyColumnTracker.Dimension dirty = this.boxy$dirty;
+        if (dirty == null || dirty.tracker() != tracker) {
+            dirty = tracker.dimension(((ServerLevel) (Object) this).dimension().location().toString());
+            this.boxy$dirty = dirty;
         }
-        service.getDirtyTracker().markDirty(dimension, pos.getX() >> 4, pos.getZ() >> 4);
+        dirty.mark(pos.getX() >> 4, pos.getZ() >> 4);
         if (!this.boxy$diagLogged) {
             this.boxy$diagLogged = true;
             VSSLogger.info("Boxy live dirty-sync ACTIVE (edit-gated) — first change at chunk ["
-                    + (pos.getX() >> 4) + ", " + (pos.getZ() >> 4) + "] in " + dimension);
+                    + (pos.getX() >> 4) + ", " + (pos.getZ() >> 4) + "] in " + ((ServerLevel) (Object) this).dimension().location());
         }
     }
 }

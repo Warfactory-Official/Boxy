@@ -7,7 +7,9 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.TicketType;
+import net.neoforged.fml.ModList;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
@@ -27,6 +29,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.List;
 import java.util.ArrayList;
 
@@ -42,7 +45,36 @@ public final class FrozenChunkLoader {
     /** {@link TrackedEntityTypes#TAG} reloaded => full rescan. */
     private static boolean tagsChanged;
 
+    /** Entity lifecycle events fire on region workers; DiscoveredEntities and its SavedData storage are server-thread only. */
+    private record Pending(ServerLevel level, UUID uuid, ResourceLocation type, long chunk) {}
+    private static final ConcurrentLinkedQueue<Pending> INBOX = new ConcurrentLinkedQueue<>();
+
     private FrozenChunkLoader() {}
+
+    private static void drainInbox() {
+        Pending p;
+        while ((p = INBOX.poll()) != null) {
+            DiscoveredEntities cache = DiscoveredEntities.get(p.level);
+            if (p.type == null) cache.forget(p.uuid); else cache.remember(p.uuid, p.type, p.chunk);
+        }
+    }
+
+    /** {@code type == null} => forget. Server thread: inline after queued ops; worker: 1 record + 1 queue node. */
+    private static void post(ServerLevel level, UUID uuid, ResourceLocation type, long chunk) {
+        if (level.getServer().isSameThread()) {
+            if (!INBOX.isEmpty()) drainInbox();
+            DiscoveredEntities cache = DiscoveredEntities.get(level);
+            if (type == null) cache.forget(uuid); else cache.remember(uuid, type, chunk);
+        } else {
+            INBOX.add(new Pending(level, uuid, type, chunk));
+        }
+    }
+
+    private static void observe(ServerLevel level, Entity entity) {
+        if (DiscoveredEntities.eligible(entity)) {
+            post(level, entity.getUUID(), BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()), entity.chunkPosition().toLong());
+        }
+    }
 
     private static final class PlayerLoad {
         final UUID owner;
@@ -66,12 +98,14 @@ public final class FrozenChunkLoader {
         MinecraftServer server = event.getServer();
         boolean typesChanged = TrackedEntityTypes.refreshServerTypes() | tagsChanged;
         tagsChanged = false;
+        if (!INBOX.isEmpty()) drainInbox();
         for (ServerLevel level : server.getAllLevels()) {
             // EntityJoinLevelEvent and EnteringSection maintain the index as entities load and move.
             // A full scan is needed when the whitelist changes (and on the first call, when
             // refreshServerTypes resolves the configured list). Keep a slow safety sweep for third-party
             // entity code that bypasses normal lifecycle events, rather than scanning every second.
-            if (typesChanged || server.getTickCount() % 200 == 0) {
+            // Periodic sweep skipped under a threaded host: getAllEntities iterates maps region workers mutate.
+            if (typesChanged || server.getTickCount() % 200 == 0 && !ModList.get().isLoaded("tessellate")) {
                 for (Entity entity : level.getAllEntities()) DiscoveredEntities.get(level).observe(entity);
             }
             DiscoveredEntities.get(level).refresh(level);
@@ -142,7 +176,7 @@ public final class FrozenChunkLoader {
 
     @SubscribeEvent
     public static void onEntityJoin(EntityJoinLevelEvent event) {
-        if (event.getLevel() instanceof ServerLevel level) DiscoveredEntities.get(level).observe(event.getEntity());
+        if (event.getLevel() instanceof ServerLevel level) observe(level, event.getEntity());
     }
 
     @SubscribeEvent
@@ -151,7 +185,7 @@ public final class FrozenChunkLoader {
         if (event.didChunkChange() && entity.isAddedToLevel() && !entity.isRemoved()
                 && entity.level() instanceof ServerLevel level
                 && !(entity instanceof Player) && TrackedEntityTypes.serverContains(entity.getType())) {
-            DiscoveredEntities.get(level).remember(entity.getUUID(), BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()),
+            post(level, entity.getUUID(), BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()),
                     ChunkPos.asLong(event.getNewPos().x(), event.getNewPos().z()));
         }
     }
@@ -161,12 +195,11 @@ public final class FrozenChunkLoader {
         if (!(event.getLevel() instanceof ServerLevel level)) return;
         Entity entity = event.getEntity();
         Entity.RemovalReason reason = entity.getRemovalReason();
-        DiscoveredEntities cache = DiscoveredEntities.get(level);
         if (reason != null && (reason.shouldDestroy() || reason == Entity.RemovalReason.CHANGED_DIMENSION)) {
-            cache.forget(entity.getUUID());
+            post(level, entity.getUUID(), null, 0L);
         } else if (!(entity instanceof Player)
                 && TrackedEntityTypes.serverContains(entity.getType())) {
-            cache.remember(entity.getUUID(), BuiltInRegistries.ENTITY_TYPE
+            post(level, entity.getUUID(), BuiltInRegistries.ENTITY_TYPE
                     .getKey(entity.getType()), entity.chunkPosition().toLong());
         }
     }

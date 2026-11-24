@@ -133,7 +133,7 @@ public final class BoxySmoke {
             throw new AssertionError(e);
         }
         var chunk = level.getChunk(0, 0);
-        var snapshot = ColumnSnapshotter.snapshot(server, level, chunk, 0, 0);
+        var snapshot = ColumnSnapshotter.snapshot(level, chunk, 0, 0);
         ColumnSnapshotter.serialize(snapshot);
         var emptySnapshot = new ColumnSnapshot(0, 0,
                 new ColumnSnapshot.SectionSnapshot[0]);

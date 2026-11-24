@@ -4,7 +4,6 @@ import com.golem.boxy.vss.mixin.AccessorLevelChunkSection;
 import io.netty.buffer.Unpooled;
 import net.minecraft.core.SectionPos;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.state.BlockState;
@@ -18,7 +17,7 @@ import net.minecraft.world.level.lighting.LevelLightEngine;
 import java.util.ArrayList;
 
 /**
- * Splits column serialization into a cheap server-thread half and an expensive off-thread half.
+ * Splits column serialization into a cheap owner-thread half and an expensive off-thread half.
  *
  * <p>{@link SectionSerializer} does the whole job inline, and its cost is dominated by
  * {@code FriendlyByteBuf.writeLongArray} — a per-element {@code writeLong} loop over the block-state
@@ -29,7 +28,7 @@ import java.util.ArrayList;
  * deserializer and {@link NbtSectionSerializer}'s disk-path layout are unaffected.
  */
 public final class ColumnSnapshotter {
-    /** Scratch for writing the small biome container on the server thread (a few dozen bytes per section). */
+    /** Scratch for writing the small biome container on the snapshot thread (a few dozen bytes per section). */
     private static final ThreadLocal<FriendlyByteBuf> SCRATCH_BIOME_BUF =
             ThreadLocal.withInitial(() -> new FriendlyByteBuf(Unpooled.buffer(1024)));
     private static final ThreadLocal<ArrayList<ColumnSnapshot.SectionSnapshot>> SCRATCH_SECTIONS =
@@ -41,16 +40,11 @@ public final class ColumnSnapshotter {
     private ColumnSnapshotter() {}
 
     /**
-     * <b>Server thread only.</b> Copies the live block-state containers and light data out of the chunk.
-     *
-     * <p>Must not run anywhere else: {@code PalettedContainer.copy()} reads the volatile data field without
-     * taking the ThreadingDetector, so a copy racing a {@code setBlockState} tears <em>silently</em> rather
-     * than throwing. Bracketing the copy in acquire/release doesn't make off-thread copying safe — it makes an
-     * off-thread <em>mutator</em> fail loudly instead of corrupting the LOD we ship to clients.
+     * Owner thread of the chunk only: server thread, or the owning region worker via {@link LiveSnapshots}.
+     * {@code PalettedContainer.copy()} reads without the ThreadingDetector => racing {@code setBlockState} tears
+     * silently; off-owner acquire/release makes the mutator throw instead.
      */
-    public static ColumnSnapshot snapshot(MinecraftServer server, ServerLevel level, LevelChunk chunk, int cx, int cz) {
-        BoxyThreads.assertServerThread(server, "ColumnSnapshotter.snapshot");
-
+    public static ColumnSnapshot snapshot(ServerLevel level, LevelChunk chunk, int cx, int cz) {
         int minSectionY = level.getMinSection();
         LevelChunkSection[] sections = chunk.getSections();
         LevelLightEngine lightEngine = level.getLightEngine();

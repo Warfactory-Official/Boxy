@@ -46,7 +46,11 @@ public class ChunkGenerationService {
     private volatile long totalCompleted = 0L;
     private volatile long totalTimeouts = 0L;
 
-    public ChunkGenerationService(VSSServerConfig config) {
+    private final LiveSnapshots snapshots;
+    private final ConcurrentLinkedQueue<Completion> completions = new ConcurrentLinkedQueue<>();
+
+    public ChunkGenerationService(VSSServerConfig config, LiveSnapshots snapshots) {
+        this.snapshots = snapshots;
         this.maxConcurrent = config.generationConcurrencyLimitGlobal;
         this.maxPerPlayerActive = config.generationConcurrencyLimitPerPlayer;
         this.timeoutTicks = config.generationTimeoutSeconds * 20;
@@ -84,10 +88,35 @@ public class ChunkGenerationService {
             return List.of();
         }
         List<GenerationReadyData> ready = null;
+        Completion done;
+        while ((done = this.completions.poll()) != null) {
+            if (!this.active.values().remove(done.gen)) {
+                continue;
+            }
+            PendingGeneration gen = done.gen;
+            for (GenerationCallback cb : gen.callbacks) {
+                decrementCount(this.perPlayerActiveCount, cb.playerUuid);
+                if (done.data == null) {
+                    this.addResult(cb.playerUuid, ChunkDiskReader.saturatedResult(cb.playerUuid, cb.requestId, gen.pos.x, gen.pos.z, cb.submissionOrder));
+                } else {
+                    if (ready == null) {
+                        ready = new ArrayList<>();
+                    }
+                    ready.add(new GenerationReadyData(cb.playerUuid, cb.requestId, done.data, done.timestamp, cb.submissionOrder, gen.level.dimension().location().toString()));
+                }
+            }
+            if (done.data != null) {
+                this.totalCompleted++;
+            }
+            releaseTicket(gen);
+        }
         Iterator<Map.Entry<PendingGenerationKey, PendingGeneration>> iter = this.active.entrySet().iterator();
 
         while (iter.hasNext()) {
             PendingGeneration gen = iter.next().getValue();
+            if (gen.capturing) {
+                continue;
+            }
             gen.ticksWaiting++;
             if (gen.ticksWaiting > this.timeoutTicks) {
                 VSSLogger.debug("Generation timeout for chunk " + gen.pos.x + "," + gen.pos.z + " after " + gen.ticksWaiting
@@ -101,10 +130,28 @@ public class ChunkGenerationService {
                 this.totalTimeouts++;
             } else {
                 LevelChunk chunk = gen.level.getChunkSource().getChunkNow(gen.pos.x, gen.pos.z);
-                if (chunk != null && System.nanoTime() < deadlineNanos) {
+                if (chunk != null && System.nanoTime() < deadlineNanos && this.snapshots.deferred()) {
+                    gen.capturing = true;
+                    LiveSnapshots.Handle handle = this.snapshots.capture(gen.level.getServer().getTickCount(), gen.level, gen.pos.x, gen.pos.z,
+                            () -> ColumnSnapshotter.snapshot(gen.level, chunk, gen.pos.x, gen.pos.z), new LiveSnapshots.Sink<ColumnSnapshot>() {
+                        @Override
+                        public void accept(ColumnSnapshot snapshot) {
+                            long timestamp = VSSConstants.epochSeconds();
+                            completions.add(new Completion(gen, LoadedColumnData.deferred(gen.pos.x, gen.pos.z,
+                                    () -> ColumnSnapshotter.serialize(snapshot)), timestamp));
+                        }
+
+                        @Override
+                        public void fail(Throwable cause) {
+                            VSSLogger.error("Failed to extract primitives for generated chunk at " + gen.pos.x + ", " + gen.pos.z, cause);
+                            completions.add(new Completion(gen, null, 0L));
+                        }
+                    });
+                    gen.handle = handle;
+                } else if (chunk != null && System.nanoTime() < deadlineNanos) {
                     try {
                         long columnTimestamp = VSSConstants.epochSeconds();
-                        ColumnSnapshot snapshot = ColumnSnapshotter.snapshot(gen.level.getServer(), gen.level, chunk, gen.pos.x, gen.pos.z);
+                        ColumnSnapshot snapshot = ColumnSnapshotter.snapshot(gen.level, chunk, gen.pos.x, gen.pos.z);
                         LoadedColumnData columnData = LoadedColumnData.deferred(gen.pos.x, gen.pos.z,
                                 () -> ColumnSnapshotter.serialize(snapshot));
                         for (GenerationCallback cb : gen.callbacks) {
@@ -162,6 +209,9 @@ public class ChunkGenerationService {
             PendingGeneration gen = iter.next().getValue();
             gen.callbacks.removeIf(cb -> cb.playerUuid.equals(playerUuid));
             if (gen.callbacks.isEmpty()) {
+                if (gen.handle != null) {
+                    gen.handle.cancel();
+                }
                 releaseTicket(gen);
                 iter.remove();
             }
@@ -200,6 +250,8 @@ public class ChunkGenerationService {
         }
     }
 
+    private record Completion(PendingGeneration gen, LoadedColumnData data, long timestamp) {}
+
     record GenerationCallback(UUID playerUuid, int requestId, long submissionOrder) {}
 
     static class PendingGeneration {
@@ -207,6 +259,8 @@ public class ChunkGenerationService {
         final ServerLevel level;
         final List<GenerationCallback> callbacks = new ArrayList<>();
         int ticksWaiting = 0;
+        boolean capturing;
+        LiveSnapshots.Handle handle;
 
         PendingGeneration(ChunkPos pos, ServerLevel level) {
             this.pos = pos;

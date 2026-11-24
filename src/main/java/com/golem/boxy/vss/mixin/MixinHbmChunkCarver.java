@@ -2,6 +2,7 @@ package com.golem.boxy.vss.mixin;
 
 import com.golem.boxy.vss.common.VSSLogger;
 import com.golem.boxy.vss.config.VSSServerConfig;
+import com.golem.boxy.vss.server.BoxyThreads;
 import com.golem.boxy.vss.server.BulkTerrainUpdateEvent;
 import com.golem.boxy.vss.server.ServerNetworking;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -37,7 +38,9 @@ public abstract class MixinHbmChunkCarver {
         var service = ServerNetworking.getRequestService();
         if (service == null) return original.call(engine, access, alreadyLit);
         long id = boxy$repairIds.incrementAndGet();
-        level.getChunkSource().addRegionTicket(boxy$repairTicket, chunk.getPos(), 0, id);
+        // add queued before original.call => FIFO guarantees the completion's removal runs after it.
+        var server = level.getServer();
+        BoxyThreads.runOnServer(server, () -> level.getChunkSource().addRegionTicket(boxy$repairTicket, chunk.getPos(), 0, id));
         try {
             return original.call(engine, access, alreadyLit).whenCompleteAsync((lit, error) -> {
                 try {
@@ -53,9 +56,9 @@ public abstract class MixinHbmChunkCarver {
                 } finally {
                     level.getChunkSource().removeRegionTicket(boxy$repairTicket, chunk.getPos(), 0, id);
                 }
-            }, level.getServer());
+            }, server);
         } catch (RuntimeException | Error failure) {
-            level.getChunkSource().removeRegionTicket(boxy$repairTicket, chunk.getPos(), 0, id);
+            BoxyThreads.runOnServer(server, () -> level.getChunkSource().removeRegionTicket(boxy$repairTicket, chunk.getPos(), 0, id));
             throw failure;
         }
     }

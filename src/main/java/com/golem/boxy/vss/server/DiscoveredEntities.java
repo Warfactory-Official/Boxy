@@ -65,10 +65,13 @@ public final class DiscoveredEntities extends SavedData {
         return tag;
     }
 
+    /** Players live in playerdata, not chunk entity storage, and cannot be restored with tickets. */
+    static boolean eligible(Entity entity) {
+        return !(entity instanceof Player) && !entity.isRemoved() && TrackedEntityTypes.serverContains(entity.getType());
+    }
+
     void observe(Entity entity) {
-        // Players live in playerdata, not chunk entity storage, and cannot be restored with tickets.
-        if (!(entity instanceof Player) && !entity.isRemoved()
-                && TrackedEntityTypes.serverContains(entity.getType())) {
+        if (eligible(entity)) {
             remember(entity.getUUID(), BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()),
                     entity.chunkPosition().toLong());
         }

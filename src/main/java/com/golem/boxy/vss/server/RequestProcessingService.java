@@ -68,6 +68,7 @@ public class RequestProcessingService {
     private final DirtyColumnTracker dirtyTracker;
     private final SerializedColumnCache bytesCache;
     private final DirtyChunkReloads dirtyReloads;
+    private final LiveSnapshots snapshots;
     private final long startTimeNanos = System.nanoTime();
     private final DirtyColumnBroadcaster dirtyBroadcaster;
     private final BaselineSnapshots baselines;
@@ -93,9 +94,10 @@ public class RequestProcessingService {
         this.dirtyTracker.setInvalidationSink(this.bytesCache::invalidate);
         this.diskReader = new ChunkDiskReader(config.diskReaderThreads, this.bytesCache);
         this.liveColumnSerializer = new LiveColumnSerializer(this.diskReader, this.bytesCache);
-        this.dirtyReloads = new DirtyChunkReloads(server, this.diskReader, this.liveColumnSerializer);
+        this.snapshots = LiveSnapshots.create();
+        this.dirtyReloads = new DirtyChunkReloads(server, this.diskReader, this.liveColumnSerializer, this.snapshots);
         this.diskReader.setDirtyReload(this.dirtyReloads::submit);
-        this.generationService = config.enableChunkGeneration ? new ChunkGenerationService(config) : null;
+        this.generationService = config.enableChunkGeneration ? new ChunkGenerationService(config, this.snapshots) : null;
         this.bandwidthLimiter = new SharedBandwidthLimiter(config.bytesPerSecondLimitGlobal);
         Path dataDir = server.getWorldPath(LevelResource.ROOT).resolve("data");
         this.offThreadProcessor = new ServerOffThreadProcessor(this.players, this.diskReader, this.generationService, dataDir, config.perDimensionTimestampCacheSizeMB, this.bytesCache);
@@ -206,6 +208,7 @@ public class RequestProcessingService {
         // matters under a tight budget: these requests already hold permits, so finishing them keeps the
         // pipeline draining, whereas new probes only create more work.
         this.baselines.tick();
+        this.snapshots.sweep(this.server.getTickCount());
         this.drainLiveSerializeRequests(deadlineNanos);
         this.dirtyReloads.tick(deadlineNanos);
         List<GenerationReadyData> generationReady = this.tickGenerationService(deadlineNanos);
@@ -441,13 +444,27 @@ public class RequestProcessingService {
 
             // The server thread only copies (container clones + light memcpy); the buffer writes — the
             // expensive part — happen on the serializer pool, which publishes the result itself.
-            ColumnSnapshot snapshot = ColumnSnapshotter.snapshot(this.server, level, chunk, req.cx(), req.cz());
-            this.liveColumnSerializer.submit(req, snapshot);
+            this.snapshots.capture(this.server.getTickCount(), level, req.cx(), req.cz(),
+                    () -> ColumnSnapshotter.snapshot(level, chunk, req.cx(), req.cz()), new LiveSnapshots.Sink<ColumnSnapshot>() {
+                @Override
+                public void accept(ColumnSnapshot snapshot) {
+                    liveColumnSerializer.submit(req, snapshot);
+                }
+
+                @Override
+                public void fail(Throwable cause) {
+                    failLiveColumn(req, cause);
+                }
+            });
         } catch (Throwable t) {
-            VSSLogger.error("Failed to serialize live column [" + req.cx() + ", " + req.cz() + "] in " + req.dimension(), t);
-            this.diskReader.publishResult(req.playerUuid(),
-                    ChunkDiskReader.saturatedResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
+            this.failLiveColumn(req, t);
         }
+    }
+
+    private void failLiveColumn(OffThreadProcessor.LiveSerializeRequest req, Throwable t) {
+        VSSLogger.error("Failed to serialize live column [" + req.cx() + ", " + req.cz() + "] in " + req.dimension(), t);
+        this.diskReader.publishResult(req.playerUuid(),
+                ChunkDiskReader.saturatedResult(req.playerUuid(), req.requestId(), req.cx(), req.cz(), req.submissionOrder()));
     }
 
     private void drainGenerationTicketRequests() {

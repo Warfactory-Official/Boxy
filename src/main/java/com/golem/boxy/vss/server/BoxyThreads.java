@@ -1,6 +1,5 @@
 package com.golem.boxy.vss.server;
 
-import com.golem.boxy.vss.common.VSSLogger;
 import net.minecraft.server.MinecraftServer;
 
 /**
@@ -23,14 +22,14 @@ public final class BoxyThreads {
     }
 
     /**
-     * Logs (does not throw) when {@code what} runs off the server thread. Deliberately not fatal: a false
-     * positive during shutdown or from a mod-supplied executor should not take down a world, and the log line
-     * is enough to find the caller.
+     * Server thread: inline. Otherwise queued FIFO on the server executor. Chunk tickets are server-thread only
+     * (DistanceManager); region workers must route through this.
      */
-    public static void assertServerThread(MinecraftServer server, String what) {
-        if (VSSLogger.isDebugEnabled() && !isServerThread(server)) {
-            VSSLogger.error(what + " ran on " + Thread.currentThread().getName()
-                    + " but must run on the server thread", new IllegalStateException("wrong thread"));
+    public static void runOnServer(MinecraftServer server, Runnable op) {
+        if (server.isSameThread()) {
+            op.run();
+        } else {
+            server.execute(op);
         }
     }
 }
