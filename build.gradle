@@ -82,6 +82,7 @@ configurations {
 dependencies {
     // Native Mojmap artifact, supplied separately. Never embed Voxy or renderer libraries in Boxy.
     compileOnly files(voxyJar)
+    compileOnly("maven.modrinth:dynamictrees:G4uJ0UA0") { transitive = false }
     nativeClientMods files(voxyJar)
     nativeClientMods "maven.modrinth:sodium:${sodium_runtime_version}"
     if (providers.gradleProperty('with_iris').isPresent()) {

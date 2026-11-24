@@ -178,7 +178,7 @@ final class TileBuilder {
          if (y < from) {
             continue;
          }
-         BlockState state = placed.get(y);
+         BlockState state = com.golem.boxy.lod.dt.DtLod.connect(placed.get(y), capture, x, y, z);
          column.set(y, state, biome, state.isAir() ? sampler.airLight() : ColumnRuns.UNLIT);
       }
    }

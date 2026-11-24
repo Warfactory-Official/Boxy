@@ -204,6 +204,10 @@ public final class CaptureLevel implements WorldGenLevel {
       return world.seed();
    }
 
+   public net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension() {
+      return world.dimension();
+   }
+
    @Override
    public int getSeaLevel() {
       return world.seaLevel();
